@@ -81,9 +81,9 @@ export const referenceDsc = {
 export const roadmapProgress = [
   { label: "Backend MVP FastAPI", status: "done" },
   { label: "Cliente web WhiteSur", status: "done" },
-  { label: "Dicom folder upload en navegador", status: "done" },
+  { label: "Metadata y preview DICOM", status: "done" },
+  { label: "Presets locales", status: "done" },
+  { label: "Resultados e historial local", status: "done" },
   { label: "Segmentacion abdominal MVP", status: "in-progress" },
-  { label: "Integracion MONAI UNesT", status: "planned" },
   { label: "Integracion nnU-Net pelvis", status: "planned" },
 ];
-

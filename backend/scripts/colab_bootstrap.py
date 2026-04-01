@@ -5,6 +5,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from urllib.parse import quote
 
 
 REPO_ROOT = Path(os.environ.get("AURA_RT_REPO_ROOT", "/content/AURAOnline"))
@@ -14,6 +15,8 @@ SERVER_PORT = int(os.environ.get("AURA_RT_PORT", "8000"))
 CACHE_ROOT_DEFAULT = Path(
     os.environ.get("AURA_RT_COLAB_CACHE_ROOT", "/content/drive/MyDrive/AURA_RT_CACHE")
 )
+WEBAPP_URL = os.environ.get("AURA_RT_WEBAPP_URL", "http://127.0.0.1:5173").strip()
+WEBAPP_QUERY_PARAM = os.environ.get("AURA_RT_WEBAPP_QUERY_PARAM", "backend").strip() or "backend"
 
 
 def run_command(command: list[str]) -> None:
@@ -83,6 +86,15 @@ def wait_for_server(timeout_seconds: int = 30) -> None:
     raise TimeoutError("El backend no respondio a /health dentro del tiempo esperado.")
 
 
+def build_webapp_link(public_url: str) -> str | None:
+    if not WEBAPP_URL:
+        return None
+
+    separator = "&" if "?" in WEBAPP_URL else "?"
+    encoded_backend_url = quote(public_url, safe="")
+    return f"{WEBAPP_URL}{separator}{WEBAPP_QUERY_PARAM}={encoded_backend_url}"
+
+
 def main() -> None:
     if not REPO_ROOT.exists():
         raise FileNotFoundError(
@@ -95,9 +107,13 @@ def main() -> None:
     start_uvicorn()
     wait_for_server()
     public_url = start_ngrok()
+    os.environ["AURA_RT_PUBLIC_URL"] = public_url
+    webapp_link = build_webapp_link(public_url)
     print(f"Repositorio: {REPO_ROOT}")
     print(f"Cache: {cache_root}")
     print(f"AURA-RT backend disponible en: {public_url}")
+    if webapp_link:
+        print(f"Web app lista para abrir: {webapp_link}")
     print("Mantener esta celda activa mientras se use la web app cliente.")
 
 

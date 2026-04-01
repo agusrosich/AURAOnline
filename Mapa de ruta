@@ -29,6 +29,11 @@ Estado real del repo
 - [x] Seleccion de estructuras y presets implementada en la web app.
 - [x] Envio HTTP al backend y descarga de ZIP implementados en la web app.
 - [x] Feedback visual de progreso y errores integrado en la web app.
+- [x] Metadata ampliada del estudio visible en la web app.
+- [x] Presets locales persistidos en navegador.
+- [x] Pantalla de resultados ampliada con trazabilidad basica.
+- [x] Historial local de casos integrado en la web app.
+- [x] Disclaimer medico persistente reforzado en la web app.
 - [x] `.env.example` y scripts de arranque agregados.
 - [x] Lanzador `.bat` de Windows para la web app.
 - [x] Notebook reproducible de Colab agregado al repo.
@@ -86,7 +91,7 @@ Pendiente backend
 
 Pendiente frontend
 - [ ] Manejo de timeout y cancelacion mas robusto.
-- [ ] Persistencia local de configuracion y ultimos casos.
+- [x] Persistencia local de configuracion y ultimos casos.
 
 Testing
 - [ ] Test de anonimizado DICOM.
@@ -105,9 +110,9 @@ Hecho
 - [x] Preview real de slice DICOM no comprimido.
 
 Pendiente
-- [ ] Ampliar metadata del estudio.
-- [ ] Completar mejor pantalla de resultados.
-- [ ] Agregar disclaimer medico persistente mas fuerte.
+- [x] Ampliar metadata del estudio.
+- [x] Completar mejor pantalla de resultados.
+- [x] Agregar disclaimer medico persistente mas fuerte.
 - [ ] Agregar presets clinicos definitivos.
 - [ ] Refinar experiencia mobile y desktop.
 
@@ -168,9 +173,9 @@ Hecho
 - [x] Preview real DICOM.
 
 Pendiente
-- [ ] Pantalla de resultado ampliada.
-- [ ] Guardado de presets locales.
-- [ ] Historial de casos.
+- [x] Pantalla de resultado ampliada.
+- [x] Guardado de presets locales.
+- [x] Historial de casos.
 - [ ] Mejor accesibilidad y responsive fino.
 
 FASE 4 - INTEGRACION DE MULTIPLES MODELOS
