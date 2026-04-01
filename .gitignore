@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+env/
+
+client/output/
+backend/tmp/
+*.zip
+*.nii.gz
+*.dcm
+webapp/node_modules/
+webapp/dist/
+

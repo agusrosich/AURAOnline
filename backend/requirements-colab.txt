@@ -1,0 +1,13 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
+pydantic>=2.7
+numpy>=1.26
+SimpleITK>=2.3
+pydicom>=2.4
+requests>=2.32
+rt-utils>=1.2.7
+TotalSegmentator>=2.7
+monai>=1.4
+nnunetv2>=2.5
+pyngrok>=7.1

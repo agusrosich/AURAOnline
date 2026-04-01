@@ -1,0 +1,228 @@
+AURA-RT SEGMENTATION PLATFORM - MAPA DE RUTA
+
+Actualizado
+- Fecha de referencia: 2026-04-01
+- Cliente objetivo actual: web app en navegador.
+- Cliente Python local: queda como prototipo previo, no como direccion principal del producto.
+
+Objetivo general
+- Llevar el sistema desde un MVP tecnico hasta una plataforma web estable para flujo de trabajo de segmentacion de radioterapia, con backend remoto en Colab y cliente web seguro, claro y operable por usuario clinico.
+
+Decision de arquitectura
+- [x] Se redefine el cliente principal como web app.
+- [x] Se conserva el cliente Python solo como referencia tecnica.
+- [x] La referencia WhiteSur/macOS Big Sur se adopta como direccion visual del frontend web.
+- [ ] Evaluar mas adelante si parte del preprocesamiento debe volver a un agente local por requisitos de privacidad.
+
+Estado real del repo
+- [x] Backend FastAPI MVP creado con `/health`, `/status` y `/segment`.
+- [x] Routing abdominal MVP con TotalSegmentator.
+- [x] Generacion de `RT-STRUCT` con `rt-utils`.
+- [x] CORS habilitado para desarrollo del cliente web.
+- [x] Soporte backend para ZIP con `dicom/` y `input.nii.gz` opcional.
+- [x] `/status` ampliado con fase, progreso y ultimo error.
+- [x] Logging del pipeline mejorado con trazas por etapa.
+- [x] Mensajes HTTP estructurados en `/segment`.
+- [x] Cliente web inicial creado en React + Vite.
+- [x] Carga de carpeta DICOM desde navegador implementada.
+- [x] Preview real de slice DICOM no comprimido en la web app.
+- [x] Seleccion de estructuras y presets implementada en la web app.
+- [x] Envio HTTP al backend y descarga de ZIP implementados en la web app.
+- [x] Feedback visual de progreso y errores integrado en la web app.
+- [x] `.env.example` y scripts de arranque agregados.
+- [x] Lanzador `.bat` de Windows para la web app.
+- [x] Notebook reproducible de Colab agregado al repo.
+- [x] `README.md` alineado con la arquitectura web.
+- [ ] Validacion extremo a extremo con datos reales.
+- [ ] Validacion clinica y compatibilidad real con Eclipse/ARIA.
+
+Hito inmediato
+- Conseguir una demo real: CT abdominal -> segmentacion -> RT-STRUCT -> importacion correcta.
+
+Definicion de listo para el siguiente hito
+- [ ] Usuario carga una serie CT desde la web app.
+- [ ] Selecciona estructuras MVP.
+- [ ] El frontend empaqueta y envia el caso al backend.
+- [ ] El backend segmenta y devuelve RT-STRUCT valido.
+- [ ] El usuario puede importar el resultado sin corregir referencias DICOM a mano.
+
+SPRINT 1 - CERRAR MVP REAL
+Objetivo
+- Validar el flujo actual con un estudio CT real y dependencias reales.
+
+Hecho
+- [x] Scaffolding inicial del backend.
+- [x] Scaffolding inicial del frontend web.
+- [x] Soporte backend para flujo web sin `input.nii.gz` obligatorio.
+- [x] Configuracion base por variables de entorno.
+
+Pendiente
+- [ ] Instalar y probar TotalSegmentator en el entorno objetivo.
+- [ ] Ejecutar el backend con una serie abdominal real.
+- [ ] Confirmar nombres reales de ROI generados por TotalSegmentator.
+- [ ] Verificar que `rt-utils` cree un RT-STRUCT valido.
+- [ ] Confirmar importacion en Eclipse/ARIA o visor DICOM equivalente.
+- [ ] Corregir cualquier problema de orientacion, UIDs o nombres de ROI.
+
+Entregables
+- [ ] Un caso de prueba real funcionando de punta a punta.
+- [ ] Evidencia de importacion correcta.
+- [ ] Lista de bugs detectados en el primer ciclo real.
+
+SPRINT 2 - ESTABILIZAR BASE TECNICA
+Objetivo
+- Reducir fragilidad antes de ampliar alcance funcional.
+
+Hecho
+- [x] Estructura base del proyecto separada por componentes.
+- [x] Scripts de arranque base para backend y webapp.
+- [x] `/status` con etapa actual, modelo activo y ultimo error.
+- [x] Mejor feedback de progreso por etapas en frontend.
+- [x] Logging del pipeline mejorado.
+- [x] Mensajes HTTP mas claros en `/segment`.
+
+Pendiente backend
+- [ ] Limpiar temporales y endurecer el empaquetado de salida.
+
+Pendiente frontend
+- [ ] Manejo de timeout y cancelacion mas robusto.
+- [ ] Persistencia local de configuracion y ultimos casos.
+
+Testing
+- [ ] Test de anonimizado DICOM.
+- [ ] Test de armado de ZIP.
+- [ ] Test de endpoint `/segment` con fixture controlado.
+- [ ] Build real de la webapp y validacion en navegador.
+
+SPRINT 3 - COMPLETAR FASE 1 DE PRODUCTO
+Objetivo
+- Mejorar el MVP sin cambiar todavia de arquitectura.
+
+Hecho
+- [x] Layout WhiteSur inicial.
+- [x] Sidebar, cards y header tipo macOS.
+- [x] Agrupacion visual de estructuras por region anatomica.
+- [x] Preview real de slice DICOM no comprimido.
+
+Pendiente
+- [ ] Ampliar metadata del estudio.
+- [ ] Completar mejor pantalla de resultados.
+- [ ] Agregar disclaimer medico persistente mas fuerte.
+- [ ] Agregar presets clinicos definitivos.
+- [ ] Refinar experiencia mobile y desktop.
+
+FASE 0 - PUESTA A TIERRA DEL REPO
+Objetivo
+- Dejar el proyecto ejecutable, instalable y testeable por otra persona sin contexto previo.
+
+Estado
+- [x] `README.md` con flujo actual.
+- [x] `.env.example` para backend.
+- [x] `.env.example` para webapp.
+- [x] Script de arranque local para backend.
+- [x] Script de arranque local para webapp.
+- [x] Lanzador `.bat` para abrir la webapp en Windows.
+- [x] Notebook reproducible para Colab.
+- [ ] Datos de ejemplo anonimos o guia formal de pruebas.
+
+FASE 1 - MVP FUNCIONAL EXTREMO A EXTREMO
+Objetivo
+- Hacer funcionar el caso minimo: CT abdominal + TotalSegmentator + RT-STRUCT + descarga en cliente web.
+
+Alcance anatomico inicial
+- [x] Higado
+- [x] Bazo
+- [x] Rinon derecho
+- [x] Rinon izquierdo
+- [x] Pancreas
+- [x] Vesicula
+- [x] Aorta abdominal
+- [x] Estomago
+- [x] Intestino
+
+Pendiente tecnico
+- [ ] Probar instalacion real de TotalSegmentator.
+- [ ] Verificar cache de pesos en Google Drive.
+- [ ] Validar `--fast` y `--force_split` en T4.
+- [ ] Validar construccion de RT-STRUCT con una serie real.
+- [ ] Confirmar importacion en Eclipse/ARIA.
+
+FASE 2 - ESTABILIZAR LA BASE TECNICA
+Objetivo
+- Reducir fragilidad del MVP antes de ampliar alcance.
+
+Pendiente
+- [ ] Tests unitarios para utilidades DICOM y payload.
+- [ ] Tests de integracion FastAPI.
+- [x] Manejo de errores y codigos HTTP mas consistente.
+- [ ] Limpieza de temporales y control de espacio en disco.
+- [x] Logs tecnicos mas completos a nivel de pipeline.
+
+FASE 3 - GUI WEB COMPLETA
+Objetivo
+- Llevar la interfaz web al alcance funcional definido para uso operativo.
+
+Hecho
+- [x] Base visual WhiteSur.
+- [x] Dashboard web navegable.
+- [x] Preview real DICOM.
+
+Pendiente
+- [ ] Pantalla de resultado ampliada.
+- [ ] Guardado de presets locales.
+- [ ] Historial de casos.
+- [ ] Mejor accesibilidad y responsive fino.
+
+FASE 4 - INTEGRACION DE MULTIPLES MODELOS
+Objetivo
+- Pasar de TotalSegmentator-only a routing real por anatomia.
+
+Pendiente
+- [ ] Integrar MONAI UNesT.
+- [ ] Integrar nnU-Net pelvis.
+- [ ] Resolver merge multi-modelo.
+- [ ] Reportar que modelo genero cada estructura.
+
+FASE 5 - CALIDAD DICOM Y COMPATIBILIDAD CLINICA
+Objetivo
+- Hacer confiable la salida DICOM para interoperabilidad real.
+
+Pendiente
+- [ ] Auditar UIDs de referencia.
+- [ ] Confirmar orientacion de mascaras vs DICOM.
+- [ ] Normalizar ROI names finales.
+- [ ] Validar importacion repetible en Eclipse/ARIA.
+
+FASE 6 - ROBUSTEZ OPERATIVA
+Objetivo
+- Preparar el sistema para sesiones largas, fallas parciales y uso repetido.
+
+Pendiente
+- [ ] Reintentos y recuperacion tras timeout.
+- [ ] Monitoreo simple de GPU, RAM y tiempo.
+- [ ] Recuperacion si Colab reinicia.
+- [ ] Versionado de modelos y presets.
+
+FASE 7 - VALIDACION INTERNA Y CIERRE TECNICO
+Objetivo
+- Formalizar pruebas y dejar claro el limite de uso del sistema.
+
+Pendiente
+- [ ] Bateria de casos anonimos.
+- [ ] Comparacion visual con referencia humana.
+- [ ] Manual operativo.
+- [ ] Lista de limitaciones conocidas.
+
+Riesgos principales
+- Colab gratuito puede cortar sesiones largas.
+- El cliente web simplifica despliegue, pero complica anonimizado fuerte si todo corre solo en navegador.
+- TotalSegmentator puede consumir memoria alta con estudios grandes.
+- `rt-utils` puede requerir ajustes finos segun orientacion u orden de slices.
+- Compatibilidad real con Eclipse/ARIA sigue sin comprobarse en este repo.
+
+Proximas 5 tareas recomendadas
+1. Probar el backend con un estudio CT real y TotalSegmentator instalado.
+2. Ejecutar la webapp con un caso real y confirmar respuesta del ZIP.
+3. Verificar que `RT-STRUCT` se importe correctamente en Eclipse/ARIA o visor equivalente.
+4. Agregar tests de integracion para `/segment` y utilidades DICOM.
+5. Endurecer limpieza de temporales y reintentos de red.
