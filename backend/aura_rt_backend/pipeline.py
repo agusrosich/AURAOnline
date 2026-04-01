@@ -62,13 +62,54 @@ def _load_config(config_path: Path) -> SegmentConfig:
     return SegmentConfig.model_validate_json(config_path.read_text(encoding="utf-8"))
 
 
-def _convert_dicom_to_nifti(dicom_dir: Path, output_path: Path) -> Path:
-    series_file_names = list(sitk.ImageSeriesReader.GetGDCMSeriesFileNames(str(dicom_dir)))
+def _discover_dicom_series(dicom_root: Path) -> tuple[Path, list[str]]:
+    candidate_dirs = [dicom_root, *sorted(path for path in dicom_root.rglob("*") if path.is_dir())]
+    discovered_series: list[tuple[Path, list[str]]] = []
+
+    for candidate_dir in candidate_dirs:
+        try:
+            series_ids = sitk.ImageSeriesReader.GetGDCMSeriesIDs(str(candidate_dir)) or []
+        except RuntimeError:
+            continue
+
+        for series_id in series_ids:
+            series_file_names = list(
+                sitk.ImageSeriesReader.GetGDCMSeriesFileNames(str(candidate_dir), series_id)
+            )
+            if series_file_names:
+                discovered_series.append((candidate_dir, series_file_names))
+
+        if series_ids:
+            continue
+
+        series_file_names = list(sitk.ImageSeriesReader.GetGDCMSeriesFileNames(str(candidate_dir)))
+        if series_file_names:
+            discovered_series.append((candidate_dir, series_file_names))
+
+    if not discovered_series:
+        raise PipelineError(
+            "No se detecto una serie DICOM valida dentro de la carpeta dicom/.",
+            code="invalid_dicom_series",
+            hint="Verifica que el ZIP incluya una serie CT legible por GDCM dentro de dicom/ o sus subcarpetas.",
+        )
+
+    selected_dir, series_file_names = max(discovered_series, key=lambda item: len(item[1]))
+    logger.info(
+        "Serie DICOM detectada dicom_root=%s series_dir=%s slices=%s candidates=%s",
+        dicom_root,
+        selected_dir,
+        len(series_file_names),
+        len(discovered_series),
+    )
+    return selected_dir, series_file_names
+
+
+def _convert_dicom_to_nifti(series_file_names: list[str], output_path: Path) -> Path:
     if not series_file_names:
         raise PipelineError(
             "No se detecto una serie DICOM valida dentro de la carpeta dicom/.",
             code="invalid_dicom_series",
-            hint="Verifica que el ZIP incluya una sola serie CT en formato DICOM legible por GDCM.",
+            hint="Verifica que el ZIP incluya una serie CT legible por GDCM dentro de dicom/ o sus subcarpetas.",
         )
 
     reader = sitk.ImageSeriesReader()
@@ -80,26 +121,28 @@ def _convert_dicom_to_nifti(dicom_dir: Path, output_path: Path) -> Path:
     return output_path
 
 
-def _resolve_inputs(work_dir: Path, status_tracker: StatusTracker) -> tuple[Path, Path]:
+def _resolve_inputs(work_dir: Path, status_tracker: StatusTracker) -> tuple[Path, Path, Path]:
     input_nifti = work_dir / "input.nii.gz"
-    dicom_dir = work_dir / "dicom"
-    if not dicom_dir.exists():
+    dicom_root = work_dir / "dicom"
+    if not dicom_root.exists():
         raise PipelineError(
             "El ZIP recibido no contiene la carpeta dicom/.",
             code="missing_dicom_folder",
             hint="Incluye la serie DICOM dentro de la carpeta dicom/ del ZIP.",
         )
 
+    dicom_series_dir, series_file_names = _discover_dicom_series(dicom_root)
+
     if input_nifti.exists():
         logger.info("Input NIfTI encontrado en payload path=%s", input_nifti)
-        return input_nifti, dicom_dir
+        return input_nifti, dicom_root, dicom_series_dir
 
     status_tracker.update(
         message="Convirtiendo serie DICOM a NIfTI en backend",
         phase="preprocessing",
         progress_percent=18,
     )
-    return _convert_dicom_to_nifti(dicom_dir, input_nifti), dicom_dir
+    return _convert_dicom_to_nifti(series_file_names, input_nifti), dicom_root, dicom_series_dir
 
 
 def _require_inputs(work_dir: Path) -> tuple[Path, Path]:
@@ -236,7 +279,7 @@ def process_archive(
             phase="routing",
             progress_percent=10,
         )
-        input_nifti, dicom_dir = _resolve_inputs(request_root, status_tracker)
+        input_nifti, dicom_dir, dicom_series_dir = _resolve_inputs(request_root, status_tracker)
 
         warnings: list[str] = []
         generated_masks: dict[str, tuple[Path, tuple[int, int, int]]] = {}
@@ -323,7 +366,7 @@ def process_archive(
         )
         rtstruct_path = temp_dir / f"RS.{config.anonymized_id}.dcm"
         build_rtstruct(
-            dicom_series_dir=dicom_dir,
+            dicom_series_dir=dicom_series_dir,
             structures=generated_masks,
             output_path=rtstruct_path,
         )

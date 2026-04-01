@@ -16,6 +16,9 @@ const DEFAULT_SERVER_URL =
 const POLL_INTERVAL_MS = Number(import.meta.env.VITE_AURA_RT_POLL_INTERVAL_MS || 5000);
 const CASE_HISTORY_LIMIT = 8;
 const CUSTOM_PRESET_LIMIT = 8;
+const NGROK_SKIP_WARNING_HEADERS = {
+  "ngrok-skip-browser-warning": "1",
+};
 
 const structureLabelMap = structureGroups
   .flatMap((group) => group.items)
@@ -67,6 +70,31 @@ function clearServerUrlQueryParams() {
     const nextUrl = `${url.pathname}${url.search}${url.hash}`;
     window.history.replaceState({}, "", nextUrl || "/");
   }
+}
+
+function buildBackendUrl(serverUrl, path) {
+  return `${normalizeServerUrl(serverUrl)}${path}`;
+}
+
+function buildBackendFetchOptions(options = {}) {
+  return {
+    ...options,
+    headers: {
+      ...NGROK_SKIP_WARNING_HEADERS,
+      ...(options.headers || {}),
+    },
+  };
+}
+
+function buildDicomArchivePath(file) {
+  const rawRelativePath = (file.webkitRelativePath || file.name).replace(/\\/g, "/");
+  const pathSegments = rawRelativePath.split("/").filter(Boolean);
+  const relativePath =
+    file.webkitRelativePath && pathSegments.length > 1
+      ? pathSegments.slice(1).join("/")
+      : pathSegments.join("/");
+  const normalizedPath = relativePath || file.name;
+  return normalizedPath.startsWith("dicom/") ? normalizedPath : `dicom/${normalizedPath}`;
 }
 
 function nowStamp() {
@@ -301,7 +329,10 @@ export default function App() {
 
     const intervalId = window.setInterval(async () => {
       try {
-        const response = await fetch(`${serverUrl.replace(/\/$/, "")}/status`);
+        const response = await fetch(
+          buildBackendUrl(serverUrl, "/status"),
+          buildBackendFetchOptions(),
+        );
         if (!response.ok) {
           return;
         }
@@ -360,7 +391,10 @@ export default function App() {
   async function verifyConnection() {
     setConnectionState({ label: "Verificando...", tone: "neutral" });
     try {
-      const response = await fetch(`${serverUrl.replace(/\/$/, "")}/health`);
+      const response = await fetch(
+        buildBackendUrl(serverUrl, "/health"),
+        buildBackendFetchOptions(),
+      );
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`);
       }
@@ -504,10 +538,7 @@ export default function App() {
     appendLog(`Construyendo request ZIP para ${caseId}.`);
 
     for (const file of studyFiles) {
-      const relativePath = file.webkitRelativePath || file.name;
-      const archivePath = relativePath.startsWith("dicom/")
-        ? relativePath
-        : `dicom/${relativePath}`;
+      const archivePath = buildDicomArchivePath(file);
       payloadMap[archivePath] = new Uint8Array(await file.arrayBuffer());
     }
 
@@ -522,11 +553,14 @@ export default function App() {
     try {
       setPhase("Uploading");
       appendLog("Enviando estudio al backend.");
-      const response = await fetch(`${serverUrl.replace(/\/$/, "")}/segment`, {
-        method: "POST",
-        body: formData,
-        signal: controller.signal,
-      });
+      const response = await fetch(
+        buildBackendUrl(serverUrl, "/segment"),
+        buildBackendFetchOptions({
+          method: "POST",
+          body: formData,
+          signal: controller.signal,
+        }),
+      );
 
       if (!response.ok) {
         const detail = await readErrorDetail(response);
