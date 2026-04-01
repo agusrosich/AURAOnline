@@ -86,6 +86,23 @@ def wait_for_server(timeout_seconds: int = 30) -> None:
     raise TimeoutError("El backend no respondio a /health dentro del tiempo esperado.")
 
 
+def wait_for_public_health(public_url: str, timeout_seconds: int = 30) -> None:
+    import requests
+
+    deadline = time.time() + timeout_seconds
+    health_url = f"{public_url.rstrip('/')}/health"
+    headers = {"ngrok-skip-browser-warning": "1"}
+
+    while time.time() < deadline:
+        try:
+            response = requests.get(health_url, timeout=5, headers=headers)
+            if response.ok:
+                return
+        except requests.RequestException:
+            time.sleep(1)
+    raise TimeoutError("La URL publica de ngrok no respondio a /health dentro del tiempo esperado.")
+
+
 def build_webapp_link(public_url: str) -> str | None:
     if not WEBAPP_URL:
         return None
@@ -107,6 +124,7 @@ def main() -> None:
     start_uvicorn()
     wait_for_server()
     public_url = start_ngrok()
+    wait_for_public_health(public_url)
     os.environ["AURA_RT_PUBLIC_URL"] = public_url
     webapp_link = build_webapp_link(public_url)
     print(f"Repositorio: {REPO_ROOT}")
