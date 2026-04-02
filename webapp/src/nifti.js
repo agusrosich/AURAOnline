@@ -167,7 +167,7 @@ export function parseNiftiMaskVolume(sourceBytes) {
     slices.push(mask);
   }
 
-  return { slices, width: header.width, height: header.height, depth: header.depth };
+  return { slices, width: header.width, height: header.height, depth: header.depth, spacing: header.spacing };
 }
 
 export function buildNiftiMaskPreview(sourceBytes) {

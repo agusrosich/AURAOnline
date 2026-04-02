@@ -1,4 +1,4 @@
-import { startTransition, useCallback, useEffect, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { strFromU8, unzipSync, zipSync } from "fflate";
 import { inspectDicomFiles, loadAllDicomSlices } from "./dicom";
 import { buildNiftiMaskPreview, parseNiftiMaskVolume } from "./nifti";
@@ -33,6 +33,17 @@ const STRUCTURE_COLORS = {
   PenileBulb:       [255, 102, 102],
   PelvicLymphNodes: [255, 204, 153],
 };
+function rgbToHex([r, g, b]) {
+  return "#" + [r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("");
+}
+function hexToRgb(hex) {
+  return [
+    parseInt(hex.slice(1, 3), 16),
+    parseInt(hex.slice(3, 5), 16),
+    parseInt(hex.slice(5, 7), 16),
+  ];
+}
+
 const NGROK_SKIP_WARNING_HEADERS = {
   "ngrok-skip-browser-warning": "1",
 };
@@ -359,10 +370,13 @@ function buildCaseSnapshot({
   };
 }
 
-function DicomCanvas({ slices, initialSliceIndex, windowCenter: initWC, windowWidth: initWW, onWindowChange, onSliceChange }) {
+function DicomCanvas({ slices, initialSliceIndex, windowCenter: initWC, windowWidth: initWW, onWindowChange, onSliceChange, overlays }) {
   const canvasRef = useRef(null);
   const offscreenRef = useRef(null);
+  const overlayOffscreenRef = useRef(null);
   const slicesRef = useRef(slices);
+  const overlaysRef = useRef(overlays);
+  overlaysRef.current = overlays;
   const onSliceChangeRef = useRef(onSliceChange);
   const onWindowChangeRef = useRef(onWindowChange);
   onSliceChangeRef.current = onSliceChange;
@@ -397,6 +411,38 @@ function DicomCanvas({ slices, initialSliceIndex, windowCenter: initWC, windowWi
     ctx.putImageData(imageData, 0, 0);
   }, []);
 
+  const buildOverlay = useCallback(() => {
+    const slice = slicesRef.current[viewRef.current.sliceIndex] || slicesRef.current[0];
+    const ovList = overlaysRef.current;
+    if (!slice || !ovList?.length) {
+      overlayOffscreenRef.current = null;
+      return;
+    }
+    const { columns, rows } = slice;
+    const oc = document.createElement("canvas");
+    oc.width = columns;
+    oc.height = rows;
+    const ctx = oc.getContext("2d");
+    const imageData = ctx.createImageData(columns, rows);
+    for (const ov of ovList) {
+      if (!ov.slices) continue;
+      const maskSlice = ov.slices[viewRef.current.sliceIndex];
+      if (!maskSlice) continue;
+      const [r, g, b] = ov.color;
+      for (let i = 0; i < maskSlice.length; i++) {
+        if (maskSlice[i]) {
+          const o = i * 4;
+          imageData.data[o]     = r;
+          imageData.data[o + 1] = g;
+          imageData.data[o + 2] = b;
+          imageData.data[o + 3] = 140;
+        }
+      }
+    }
+    ctx.putImageData(imageData, 0, 0);
+    overlayOffscreenRef.current = oc;
+  }, []);
+
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
     const offscreen = offscreenRef.current;
@@ -410,6 +456,11 @@ function DicomCanvas({ slices, initialSliceIndex, windowCenter: initWC, windowWi
     ctx.scale(zoom, zoom);
     ctx.imageSmoothingEnabled = zoom < 1;
     ctx.drawImage(offscreen, -offscreen.width / 2, -offscreen.height / 2);
+    const overlayOffscreen = overlayOffscreenRef.current;
+    if (overlayOffscreen) {
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(overlayOffscreen, -overlayOffscreen.width / 2, -overlayOffscreen.height / 2);
+    }
     ctx.restore();
   }, []);
 
@@ -449,9 +500,16 @@ function DicomCanvas({ slices, initialSliceIndex, windowCenter: initWC, windowWi
     }
 
     renderPixels();
+    buildOverlay();
     draw();
     onSliceChangeRef.current?.(viewRef.current.sliceIndex, slices.length);
-  }, [slices, initialSliceIndex, initWC, initWW, renderPixels, draw]);
+  }, [slices, initialSliceIndex, initWC, initWW, renderPixels, buildOverlay, draw]);
+
+  // Overlays cambian → rebuild
+  useEffect(() => {
+    buildOverlay();
+    draw();
+  }, [overlays, buildOverlay, draw]);
 
   // Rueda → navegar slices
   const handleWheel = useCallback((e) => {
@@ -464,9 +522,10 @@ function DicomCanvas({ slices, initialSliceIndex, windowCenter: initWC, windowWi
     if (newIndex === view.sliceIndex) return;
     view.sliceIndex = newIndex;
     renderPixels();
+    buildOverlay();
     draw();
     onSliceChangeRef.current?.(newIndex, allSlices.length);
-  }, [renderPixels, draw]);
+  }, [renderPixels, buildOverlay, draw]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -608,6 +667,8 @@ export default function App() {
   const [selectedVolumePath, setSelectedVolumePath] = useState("");
   const [volumePreview, setVolumePreview] = useState(null);
   const [maskOverlays, setMaskOverlays] = useState([]);
+  const [hiddenStructures, setHiddenStructures] = useState([]);
+  const [structureColorOverrides, setStructureColorOverrides] = useState({});
   const [lastStatusMessage, setLastStatusMessage] = useState("");
   const [caseHistory, setCaseHistory] = useState(() => {
     const storedValue = loadStoredJson(STORAGE_KEYS.caseHistory, []);
@@ -675,7 +736,13 @@ export default function App() {
         const bytes = new Uint8Array(await response.arrayBuffer());
         const volume = parseNiftiMaskVolume(bytes);
         const color = STRUCTURE_COLORS[asset.label] ?? [255, 255, 0];
-        return { label: asset.label, color, ...volume };
+        let nonZeroCount = 0;
+        for (const s of volume.slices) {
+          for (let i = 0; i < s.length; i++) { if (s[i]) nonZeroCount++; }
+        }
+        const [sx, sy, sz] = volume.spacing ?? [1, 1, 1];
+        const volumeMl = (nonZeroCount * sx * sy * sz) / 1000;
+        return { label: asset.label, color, nonZeroCount, volumeMl, ...volume };
       }),
     ).then((overlays) => {
       if (!cancelled) setMaskOverlays(overlays);
@@ -1110,6 +1177,19 @@ export default function App() {
     resultAssets?.masks?.find((asset) => asset.path === selectedVolumePath) ||
     resultAssets?.masks?.[0] ||
     null;
+
+  const visibleOverlays = useMemo(
+    () =>
+      maskOverlays
+        .filter((ov) => !hiddenStructures.includes(ov.label))
+        .map((ov) => ({
+          ...ov,
+          color: structureColorOverrides[ov.label] ?? ov.color,
+        })),
+    [maskOverlays, hiddenStructures, structureColorOverrides],
+  );
+
+  const allHidden = maskOverlays.length > 0 && hiddenStructures.length === maskOverlays.length;
 
   const [openSections, setOpenSections] = useState({
     servidor: false,
@@ -1672,41 +1752,132 @@ export default function App() {
         </div>
 
         <div className="stage-preview">
-          {studyMeta?.previewUrl ? (
-            <figure className="preview-figure">
-              {slices.length > 0 ? (
-                <DicomCanvas
-                  slices={slices}
-                  initialSliceIndex={Math.floor(slices.length / 2)}
-                  windowCenter={studyMeta.previewWindowCenter}
-                  windowWidth={studyMeta.previewWindowWidth}
-                  onWindowChange={(wc, ww) => setViewWindow({ wc, ww })}
-                  onSliceChange={(index, total) => setSliceInfo({ index, total })}
-                />
-              ) : (
-                <img
-                  className="preview-image"
-                  src={studyMeta.previewUrl}
-                  alt="Preview del slice DICOM"
-                />
-              )}
-              <figcaption className="preview-caption">
-                <span>
-                  {slices.length > 0
-                    ? `Slice ${sliceInfo.index + 1}/${sliceInfo.total}`
-                    : `Slice ${studyMeta.instanceNumber || "N/D"}`}
-                  {" · "}{studyMeta.rows} × {studyMeta.columns}
-                </span>
-                <span>WC {viewWindow?.wc ?? studyMeta.previewWindowCenter ?? "N/D"} / WW {viewWindow?.ww ?? studyMeta.previewWindowWidth ?? "N/D"}</span>
-              </figcaption>
-            </figure>
-          ) : (
-            <div className="preview-placeholder">
-              <span>Preview DICOM</span>
-              <p>
-                {studyMeta?.previewError ||
-                  "Seleccioná una carpeta DICOM con pixel data no comprimido."}
-              </p>
+          <div className="dicom-viewer-area">
+            {studyMeta?.previewUrl ? (
+              <figure className="preview-figure">
+                {slices.length > 0 ? (
+                  <DicomCanvas
+                    slices={slices}
+                    initialSliceIndex={Math.floor(slices.length / 2)}
+                    windowCenter={studyMeta.previewWindowCenter}
+                    windowWidth={studyMeta.previewWindowWidth}
+                    onWindowChange={(wc, ww) => setViewWindow({ wc, ww })}
+                    onSliceChange={(index, total) => setSliceInfo({ index, total })}
+                    overlays={visibleOverlays}
+                  />
+                ) : (
+                  <img
+                    className="preview-image"
+                    src={studyMeta.previewUrl}
+                    alt="Preview del slice DICOM"
+                  />
+                )}
+                <figcaption className="preview-caption">
+                  <span>
+                    {slices.length > 0
+                      ? `Slice ${sliceInfo.index + 1}/${sliceInfo.total}`
+                      : `Slice ${studyMeta.instanceNumber || "N/D"}`}
+                    {" · "}{studyMeta.rows} × {studyMeta.columns}
+                  </span>
+                  <span>WC {viewWindow?.wc ?? studyMeta.previewWindowCenter ?? "N/D"} / WW {viewWindow?.ww ?? studyMeta.previewWindowWidth ?? "N/D"}</span>
+                </figcaption>
+              </figure>
+            ) : (
+              <div className="preview-placeholder">
+                <span>Preview DICOM</span>
+                <p>
+                  {studyMeta?.previewError ||
+                    "Seleccioná una carpeta DICOM con pixel data no comprimido."}
+                </p>
+              </div>
+            )}
+          </div>
+
+          {maskOverlays.length > 0 && (
+            <div className="structures-side-panel">
+              <div className="struct-panel-header">
+                <span className="struct-panel-title">Estructuras</span>
+                <button
+                  className="pill-button"
+                  onClick={() =>
+                    setHiddenStructures(
+                      allHidden ? [] : maskOverlays.map((ov) => ov.label),
+                    )
+                  }
+                >
+                  {allHidden ? "Mostrar todas" : "Ocultar todas"}
+                </button>
+              </div>
+
+              <div className="struct-list">
+                {maskOverlays.map((ov) => {
+                  const isHidden = hiddenStructures.includes(ov.label);
+                  const effectiveColor = structureColorOverrides[ov.label] ?? ov.color;
+                  const hexColor = rgbToHex(effectiveColor);
+                  const displayName = structureLabelMap[ov.label] || ov.label;
+                  const volText = ov.volumeMl != null ? `${ov.volumeMl.toFixed(1)} ml` : null;
+                  return (
+                    <div key={ov.label} className={`struct-row${isHidden ? " struct-hidden" : ""}`}>
+                      <label className="struct-color-wrap" title="Cambiar color">
+                        <input
+                          type="color"
+                          value={hexColor}
+                          onChange={(e) =>
+                            setStructureColorOverrides((prev) => ({
+                              ...prev,
+                              [ov.label]: hexToRgb(e.target.value),
+                            }))
+                          }
+                        />
+                        <span
+                          className="struct-color-swatch"
+                          style={{ background: hexColor }}
+                        />
+                      </label>
+                      <div className="struct-info">
+                        <span className="struct-name">{displayName}</span>
+                        {volText && <span className="struct-vol">{volText}</span>}
+                      </div>
+                      <button
+                        className={`struct-toggle${isHidden ? " off" : ""}`}
+                        title={isHidden ? "Mostrar" : "Ocultar"}
+                        onClick={() =>
+                          setHiddenStructures((prev) =>
+                            isHidden
+                              ? prev.filter((l) => l !== ov.label)
+                              : [...prev, ov.label],
+                          )
+                        }
+                      >
+                        {isHidden ? "○" : "●"}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className="struct-panel-footer">
+                {resultAssets?.rtstruct && (
+                  <a
+                    className="anchor-button full-width"
+                    style={{ textAlign: "center" }}
+                    href={resultAssets.rtstruct.url}
+                    download={resultAssets.rtstruct.name}
+                  >
+                    Descargar RT-STRUCT
+                  </a>
+                )}
+                {downloadUrl && (
+                  <a
+                    className="anchor-button full-width"
+                    style={{ textAlign: "center" }}
+                    href={downloadUrl}
+                    download={downloadName}
+                  >
+                    Descargar ZIP completo
+                  </a>
+                )}
+              </div>
             </div>
           )}
         </div>

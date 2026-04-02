@@ -38,6 +38,7 @@ Estado real del repo
 - [x] Lanzador `.bat` de Windows para la web app.
 - [x] Notebook reproducible de Colab agregado al repo.
 - [x] `README.md` alineado con la arquitectura web.
+- [x] Build de produccion de la web app validado con `vite build`.
 - [ ] Validacion extremo a extremo con datos reales.
 - [ ] Validacion clinica y compatibilidad real con Eclipse/ARIA.
 
@@ -87,9 +88,11 @@ Hecho
 - [x] Mensajes HTTP mas claros en `/segment`.
 
 Pendiente backend
-- [ ] Limpiar temporales y endurecer el empaquetado de salida.
+- [x] Limpieza basica de temporales por request y pipeline.
+- [ ] Endurecer el empaquetado de salida y control de espacio en disco.
 
 Pendiente frontend
+- [x] Cancelacion manual de requests desde la web app.
 - [ ] Manejo de timeout y cancelacion mas robusto.
 - [x] Persistencia local de configuracion y ultimos casos.
 
@@ -97,15 +100,16 @@ Testing
 - [ ] Test de anonimizado DICOM.
 - [ ] Test de armado de ZIP.
 - [ ] Test de endpoint `/segment` con fixture controlado.
-- [ ] Build real de la webapp y validacion en navegador.
+- [x] Build real de la webapp.
+- [ ] Validacion manual en navegador del build y del flujo web.
 
 SPRINT 3 - COMPLETAR FASE 1 DE PRODUCTO
 Objetivo
 - Mejorar el MVP sin cambiar todavia de arquitectura.
 
 Hecho
-- [x] Layout WhiteSur inicial.
-- [x] Sidebar, cards y header tipo macOS.
+- [x] Layout inicial de escritorio para la web app.
+- [x] Sidebar, cards, header y panel principal implementados.
 - [x] Agrupacion visual de estructuras por region anatomica.
 - [x] Preview real de slice DICOM no comprimido.
 
@@ -114,6 +118,7 @@ Pendiente
 - [x] Completar mejor pantalla de resultados.
 - [x] Agregar disclaimer medico persistente mas fuerte.
 - [ ] Agregar presets clinicos definitivos.
+- [x] Base responsive inicial con breakpoints principales.
 - [ ] Refinar experiencia mobile y desktop.
 
 FASE 0 - PUESTA A TIERRA DEL REPO
@@ -160,7 +165,8 @@ Pendiente
 - [ ] Tests unitarios para utilidades DICOM y payload.
 - [ ] Tests de integracion FastAPI.
 - [x] Manejo de errores y codigos HTTP mas consistente.
-- [ ] Limpieza de temporales y control de espacio en disco.
+- [x] Limpieza basica de temporales por request y pipeline.
+- [ ] Control de espacio en disco y endurecimiento adicional del empaquetado.
 - [x] Logs tecnicos mas completos a nivel de pipeline.
 
 FASE 3 - GUI WEB COMPLETA
@@ -168,7 +174,7 @@ Objetivo
 - Llevar la interfaz web al alcance funcional definido para uso operativo.
 
 Hecho
-- [x] Base visual WhiteSur.
+- [x] Base visual operativa de la web app.
 - [x] Dashboard web navegable.
 - [x] Preview real DICOM.
 
@@ -176,6 +182,8 @@ Pendiente
 - [x] Pantalla de resultado ampliada.
 - [x] Guardado de presets locales.
 - [x] Historial de casos.
+- [x] Responsive base con media queries principales.
+- [ ] Alinear el frontend final con la direccion visual WhiteSur/macOS Big Sur.
 - [ ] Mejor accesibilidad y responsive fino.
 
 FASE 4 - INTEGRACION DE MULTIPLES MODELOS
@@ -217,6 +225,12 @@ Pendiente
 - [ ] Comparacion visual con referencia humana.
 - [ ] Manual operativo.
 - [ ] Lista de limitaciones conocidas.
+
+Hallazgos de esta revision del repo
+- [x] La web app compila hoy en produccion con `vite build`.
+- [ ] No hay suite automatica de tests versionada en el repo.
+- [ ] No hay evidencia versionada de validacion extremo a extremo con datos reales.
+- [ ] La UI actual no esta alineada del todo con la direccion WhiteSur/macOS Big Sur; hoy se parece mas a una consola oscura tipo workstation.
 
 Riesgos principales
 - Colab gratuito puede cortar sesiones largas.

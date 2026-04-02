@@ -476,12 +476,20 @@ button { cursor: pointer; }
 
 /* ── Preview area ── */
 .stage-preview {
-  display: grid;
-  place-items: center;
+  display: flex;
+  flex-direction: row;
   overflow: hidden;
   background: #111111;
   border-bottom: 1px solid var(--border);
   min-height: 0;
+}
+
+.dicom-viewer-area {
+  flex: 1;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  min-width: 0;
 }
 
 .preview-figure {
@@ -521,6 +529,124 @@ button { cursor: pointer; }
   letter-spacing: 0.08em;
 }
 .preview-placeholder p { font-size: 11px; max-width: 34ch; }
+
+/* ── Structures side panel ── */
+.structures-side-panel {
+  width: 210px;
+  flex-shrink: 0;
+  background: var(--bg-panel);
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.struct-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  gap: 6px;
+}
+
+.struct-panel-title {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-2);
+}
+
+.struct-list {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 4px;
+}
+
+.struct-row {
+  display: grid;
+  grid-template-columns: 20px 1fr 20px;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 4px;
+  border-radius: var(--radius);
+  background: var(--bg-panel-2);
+  border: 1px solid transparent;
+  transition: border-color 0.1s;
+}
+.struct-row:hover { border-color: var(--border-light); }
+.struct-row.struct-hidden { opacity: 0.4; }
+
+.struct-color-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+}
+.struct-color-wrap input[type="color"] {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  width: 100%;
+  height: 100%;
+  cursor: pointer;
+  border: none;
+  padding: 0;
+}
+.struct-color-swatch {
+  display: block;
+  width: 14px;
+  height: 14px;
+  border-radius: 2px;
+  border: 1px solid rgba(255,255,255,0.15);
+  flex-shrink: 0;
+}
+
+.struct-info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.struct-name {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.struct-vol {
+  font-size: 10px;
+  color: var(--text-3);
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+}
+
+.struct-toggle {
+  background: transparent;
+  border: none;
+  color: var(--accent);
+  font-size: 12px;
+  line-height: 1;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.struct-toggle.off { color: var(--text-3); }
+
+.struct-panel-footer {
+  padding: 6px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex-shrink: 0;
+}
 
 /* ── Safety banner (status bar at bottom) ── */
 .safety-banner {
