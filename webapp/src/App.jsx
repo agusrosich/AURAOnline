@@ -1,6 +1,7 @@
-import { startTransition, useEffect, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useRef, useState } from "react";
 import { strFromU8, unzipSync, zipSync } from "fflate";
-import { inspectDicomFiles } from "./dicom";
+import { inspectDicomFiles, loadAllDicomSlices } from "./dicom";
+import { buildNiftiMaskPreview } from "./nifti";
 import { presets, referenceDsc, structureGroups } from "./catalog";
 
 const STORAGE_KEYS = {
@@ -140,15 +141,70 @@ function bytesToReadable(bytes) {
   return `${value.toFixed(value >= 10 || index === 0 ? 0 : 1)} ${units[index]}`;
 }
 
-function parseZipReport(blob) {
-  return blob.arrayBuffer().then((buffer) => {
-    const archive = unzipSync(new Uint8Array(buffer));
-    const reportBytes = archive["report.json"];
-    if (!reportBytes) {
-      return null;
-    }
-    return JSON.parse(strFromU8(reportBytes));
-  });
+function archiveBaseName(path) {
+  return path.split("/").filter(Boolean).pop() || path;
+}
+
+function archiveVolumeLabel(path) {
+  return archiveBaseName(path).replace(/\.nii(\.gz)?$/i, "");
+}
+
+function inferArchiveAssetType(path) {
+  const normalizedPath = path.toLowerCase();
+  if (normalizedPath.endsWith(".dcm")) {
+    return "application/dicom";
+  }
+  if (normalizedPath.endsWith(".nii.gz")) {
+    return "application/gzip";
+  }
+  if (normalizedPath.endsWith(".json")) {
+    return "application/json";
+  }
+  return "application/octet-stream";
+}
+
+function createArchiveAsset(path, bytes) {
+  return {
+    path,
+    name: archiveBaseName(path),
+    label: archiveVolumeLabel(path),
+    size: bytes.byteLength,
+    url: URL.createObjectURL(
+      new Blob([bytes], { type: inferArchiveAssetType(path) }),
+    ),
+  };
+}
+
+async function extractResultAssets(blob) {
+  const buffer = await blob.arrayBuffer();
+  const archive = unzipSync(new Uint8Array(buffer));
+  const entries = Object.entries(archive);
+  const reportBytes = archive["report.json"];
+
+  return {
+    report: reportBytes ? JSON.parse(strFromU8(reportBytes)) : null,
+    rtstruct: entries
+      .filter(([path]) => path.toLowerCase().endsWith(".dcm"))
+      .sort(([left], [right]) =>
+        left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" }),
+      )
+      .map(([path, bytes]) => createArchiveAsset(path, bytes))[0] || null,
+    masks: entries
+      .filter(([path]) => path.startsWith("masks/") && path.toLowerCase().endsWith(".nii.gz"))
+      .sort(([left], [right]) =>
+        left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" }),
+      )
+      .map(([path, bytes]) => createArchiveAsset(path, bytes)),
+    ctFileCount: entries.filter(([path]) => path.startsWith("CT/")).length,
+    zipSize: blob.size,
+  };
+}
+
+function formatSpacing(spacing) {
+  if (!Array.isArray(spacing) || spacing.length < 3) {
+    return "N/D";
+  }
+  return spacing.map((value) => Number(value).toFixed(2)).join(" x ");
 }
 
 async function readErrorDetail(response) {
@@ -249,6 +305,214 @@ function buildCaseSnapshot({
   };
 }
 
+function DicomCanvas({ slices, initialSliceIndex, windowCenter: initWC, windowWidth: initWW, onWindowChange, onSliceChange }) {
+  const canvasRef = useRef(null);
+  const offscreenRef = useRef(null);
+  const slicesRef = useRef(slices);
+  const onSliceChangeRef = useRef(onSliceChange);
+  const onWindowChangeRef = useRef(onWindowChange);
+  onSliceChangeRef.current = onSliceChange;
+  onWindowChangeRef.current = onWindowChange;
+  const viewRef = useRef({
+    zoom: 1, panX: 0, panY: 0, wc: initWC, ww: initWW,
+    sliceIndex: initialSliceIndex, dragging: false, button: -1, lastX: 0, lastY: 0,
+  });
+
+  // renderPixels y draw usan solo refs → son estables (sin deps)
+  const renderPixels = useCallback(() => {
+    const offscreen = offscreenRef.current;
+    const slice = slicesRef.current[viewRef.current.sliceIndex] || slicesRef.current[0];
+    if (!offscreen || !slice?.pixelData) return;
+    const { pixelData, rows, columns, invert } = slice;
+    const ctx = offscreen.getContext("2d");
+    const imageData = ctx.createImageData(columns, rows);
+    const { wc, ww } = viewRef.current;
+    const lower = wc - ww / 2;
+    const upper = wc + ww / 2;
+    const range = Math.max(ww, 1);
+    for (let i = 0; i < pixelData.length; i++) {
+      const clamped = Math.max(lower, Math.min(upper, pixelData[i]));
+      let v = Math.round(((clamped - lower) / range) * 255);
+      if (invert) v = 255 - v;
+      const o = i * 4;
+      imageData.data[o] = v;
+      imageData.data[o + 1] = v;
+      imageData.data[o + 2] = v;
+      imageData.data[o + 3] = 255;
+    }
+    ctx.putImageData(imageData, 0, 0);
+  }, []);
+
+  const draw = useCallback(() => {
+    const canvas = canvasRef.current;
+    const offscreen = offscreenRef.current;
+    if (!canvas || !offscreen) return;
+    const ctx = canvas.getContext("2d");
+    const { zoom, panX, panY } = viewRef.current;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.save();
+    ctx.translate(canvas.width / 2, canvas.height / 2);
+    ctx.translate(panX, panY);
+    ctx.scale(zoom, zoom);
+    ctx.imageSmoothingEnabled = zoom < 1;
+    ctx.drawImage(offscreen, -offscreen.width / 2, -offscreen.height / 2);
+    ctx.restore();
+  }, []);
+
+  // Inicializar o actualizar cuando cambia el array de slices
+  useEffect(() => {
+    const slice = slices[0];
+    if (!slice) return;
+
+    const needsReinit = !offscreenRef.current
+      || offscreenRef.current.width !== slice.columns
+      || offscreenRef.current.height !== slice.rows;
+
+    slicesRef.current = slices;
+
+    if (needsReinit) {
+      const offscreen = document.createElement("canvas");
+      offscreen.width = slice.columns;
+      offscreen.height = slice.rows;
+      offscreenRef.current = offscreen;
+
+      const canvas = canvasRef.current;
+      if (canvas?.offsetWidth && canvas?.offsetHeight) {
+        canvas.width = canvas.offsetWidth;
+        canvas.height = canvas.offsetHeight;
+      }
+      const w = canvasRef.current?.width || slice.columns;
+      const h = canvasRef.current?.height || slice.rows;
+      const fitZoom = Math.min(w / slice.columns, h / slice.rows) * 0.95;
+      viewRef.current = {
+        zoom: fitZoom, panX: 0, panY: 0, wc: initWC, ww: initWW,
+        sliceIndex: Math.min(initialSliceIndex, slices.length - 1),
+        dragging: false, button: -1, lastX: 0, lastY: 0,
+      };
+    } else {
+      // Slices extra cargados: ir al slice central sin resetear zoom/pan/window
+      viewRef.current.sliceIndex = Math.min(initialSliceIndex, slices.length - 1);
+    }
+
+    renderPixels();
+    draw();
+    onSliceChangeRef.current?.(viewRef.current.sliceIndex, slices.length);
+  }, [slices, initialSliceIndex, initWC, initWW, renderPixels, draw]);
+
+  // Rueda → navegar slices
+  const handleWheel = useCallback((e) => {
+    e.preventDefault();
+    const allSlices = slicesRef.current;
+    if (allSlices.length <= 1) return;
+    const view = viewRef.current;
+    const delta = e.deltaY > 0 ? 1 : -1;
+    const newIndex = Math.max(0, Math.min(allSlices.length - 1, view.sliceIndex + delta));
+    if (newIndex === view.sliceIndex) return;
+    view.sliceIndex = newIndex;
+    renderPixels();
+    draw();
+    onSliceChangeRef.current?.(newIndex, allSlices.length);
+  }, [renderPixels, draw]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    canvas.addEventListener("wheel", handleWheel, { passive: false });
+    return () => canvas.removeEventListener("wheel", handleWheel);
+  }, [handleWheel]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ro = new ResizeObserver(() => {
+      if (!canvas.offsetWidth || !canvas.offsetHeight) return;
+      canvas.width = canvas.offsetWidth;
+      canvas.height = canvas.offsetHeight;
+      draw();
+    });
+    ro.observe(canvas);
+    return () => ro.disconnect();
+  }, [draw]);
+
+  function handleMouseDown(e) {
+    if (e.button !== 0 && e.button !== 2) return;
+    e.preventDefault();
+    const view = viewRef.current;
+    view.dragging = true;
+    view.button = e.button;
+    view.lastX = e.clientX;
+    view.lastY = e.clientY;
+  }
+
+  function handleMouseMove(e) {
+    const view = viewRef.current;
+    if (!view.dragging) return;
+    const dx = e.clientX - view.lastX;
+    const dy = e.clientY - view.lastY;
+    view.lastX = e.clientX;
+    view.lastY = e.clientY;
+    if (view.button === 0) {
+      // Zoom: arrastre vertical (arriba = acercar, abajo = alejar)
+      const factor = Math.exp(-dy * 0.01);
+      const canvas = canvasRef.current;
+      if (canvas) {
+        const cx = canvas.width / 2;
+        const cy = canvas.height / 2;
+        const newZoom = Math.max(0.05, Math.min(40, view.zoom * factor));
+        const ratio = newZoom / view.zoom;
+        view.panX = cx - (cx - view.panX) * ratio;
+        view.panY = cy - (cy - view.panY) * ratio;
+        view.zoom = newZoom;
+      }
+      draw();
+    } else if (view.button === 2) {
+      // Windowing: horizontal = WW, vertical = WC
+      view.ww = Math.max(1, view.ww + dx * 4);
+      view.wc += dy * 2;
+      renderPixels();
+      draw();
+    }
+  }
+
+  function handleMouseUp() {
+    const view = viewRef.current;
+    if (view.dragging && view.button === 2) {
+      onWindowChangeRef.current?.(Math.round(view.wc), Math.round(view.ww));
+    }
+    view.dragging = false;
+    view.button = -1;
+  }
+
+  function handleDoubleClick() {
+    const canvas = canvasRef.current;
+    const slice = slicesRef.current[0];
+    if (!canvas || !slice) return;
+    const fitZoom = Math.min(canvas.width / slice.columns, canvas.height / slice.rows) * 0.95;
+    const view = viewRef.current;
+    view.zoom = fitZoom;
+    view.panX = 0;
+    view.panY = 0;
+    view.wc = initWC;
+    view.ww = initWW;
+    renderPixels();
+    draw();
+    onWindowChangeRef.current?.(Math.round(initWC), Math.round(initWW));
+  }
+
+  return (
+    <canvas
+      ref={canvasRef}
+      style={{ width: "100%", height: "100%", display: "block", cursor: "crosshair" }}
+      onMouseDown={handleMouseDown}
+      onMouseMove={handleMouseMove}
+      onMouseUp={handleMouseUp}
+      onMouseLeave={handleMouseUp}
+      onDoubleClick={handleDoubleClick}
+      onContextMenu={(e) => e.preventDefault()}
+    />
+  );
+}
+
 export default function App() {
   const fileInputRef = useRef(null);
   const abortRef = useRef(null);
@@ -267,6 +531,9 @@ export default function App() {
   const [backendStatus, setBackendStatus] = useState(null);
   const [studyFiles, setStudyFiles] = useState([]);
   const [studyMeta, setStudyMeta] = useState(null);
+  const [viewWindow, setViewWindow] = useState(null);
+  const [slices, setSlices] = useState([]);
+  const [sliceInfo, setSliceInfo] = useState({ index: 0, total: 0 });
   const [selectedStructures, setSelectedStructures] = useState(() => {
     const storedValue = loadStoredJson(STORAGE_KEYS.selectedStructures, []);
     return Array.isArray(storedValue) ? storedValue : [];
@@ -282,6 +549,9 @@ export default function App() {
   const [result, setResult] = useState(null);
   const [downloadUrl, setDownloadUrl] = useState("");
   const [downloadName, setDownloadName] = useState("");
+  const [resultAssets, setResultAssets] = useState(null);
+  const [selectedVolumePath, setSelectedVolumePath] = useState("");
+  const [volumePreview, setVolumePreview] = useState(null);
   const [lastStatusMessage, setLastStatusMessage] = useState("");
   const [caseHistory, setCaseHistory] = useState(() => {
     const storedValue = loadStoredJson(STORAGE_KEYS.caseHistory, []);
@@ -321,6 +591,83 @@ export default function App() {
       URL.revokeObjectURL(downloadUrl);
     };
   }, [downloadUrl]);
+
+  useEffect(() => {
+    if (!resultAssets) {
+      return undefined;
+    }
+
+    return () => {
+      if (resultAssets.rtstruct?.url) {
+        URL.revokeObjectURL(resultAssets.rtstruct.url);
+      }
+      for (const asset of resultAssets.masks || []) {
+        URL.revokeObjectURL(asset.url);
+      }
+    };
+  }, [resultAssets]);
+
+  useEffect(() => {
+    if (!resultAssets?.masks?.length) {
+      if (selectedVolumePath) {
+        setSelectedVolumePath("");
+      }
+      return;
+    }
+
+    const isSelectedPresent = resultAssets.masks.some((asset) => asset.path === selectedVolumePath);
+    if (!selectedVolumePath || !isSelectedPresent) {
+      setSelectedVolumePath(resultAssets.masks[0].path);
+    }
+  }, [resultAssets, selectedVolumePath]);
+
+  useEffect(() => {
+    if (!resultAssets?.masks?.length || !selectedVolumePath) {
+      setVolumePreview(null);
+      return undefined;
+    }
+
+    const selectedAsset =
+      resultAssets.masks.find((asset) => asset.path === selectedVolumePath) || resultAssets.masks[0];
+    let cancelled = false;
+
+    setVolumePreview({
+      status: "loading",
+      label: selectedAsset.label,
+      name: selectedAsset.name,
+    });
+
+    const loadPreview = async () => {
+      try {
+        const response = await fetch(selectedAsset.url);
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        const preview = buildNiftiMaskPreview(bytes);
+        if (!cancelled) {
+          setVolumePreview({
+            status: "ready",
+            label: selectedAsset.label,
+            name: selectedAsset.name,
+            size: selectedAsset.size,
+            ...preview,
+          });
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setVolumePreview({
+            status: "error",
+            label: selectedAsset.label,
+            message: error instanceof Error ? error.message : "No se pudo leer el volumen NIfTI.",
+          });
+        }
+      }
+    };
+
+    void loadPreview();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [resultAssets, selectedVolumePath]);
 
   useEffect(() => {
     if (!isSubmitting) {
@@ -380,6 +727,10 @@ export default function App() {
     setResult(snapshot);
     setDownloadUrl("");
     setDownloadName("");
+    setResultAssets(null);
+    setSelectedVolumePath("");
+    setVolumePreview(null);
+    setOpenSections((current) => ({ ...current, resultados: true }));
     appendLog(`Resumen historico cargado para ${snapshot.case_id}.`);
   }
 
@@ -411,6 +762,12 @@ export default function App() {
     setResult(null);
     setDownloadUrl("");
     setDownloadName("");
+    setResultAssets(null);
+    setSelectedVolumePath("");
+    setVolumePreview(null);
+    setViewWindow(null);
+    setSlices([]);
+    setSliceInfo({ index: 0, total: 0 });
 
     if (!files.length) {
       return;
@@ -430,6 +787,15 @@ export default function App() {
         ...meta,
         fileCount: files.length,
         totalBytes: files.reduce((sum, file) => sum + file.size, 0),
+      });
+
+      // Cargar todos los slices en segundo plano
+      loadAllDicomSlices(files).then((allSlices) => {
+        if (allSlices.length > 0) {
+          setSlices(allSlices);
+          setSliceInfo({ index: Math.floor(allSlices.length / 2), total: allSlices.length });
+          appendLog(`${allSlices.length} slices cargados.`);
+        }
       });
     } catch (error) {
       appendLog(`Fallo al inspeccionar archivos DICOM: ${error.message}`);
@@ -535,6 +901,12 @@ export default function App() {
     setPhase("Packaging");
     setBackendStatus(null);
     setLastStatusMessage("");
+    setResult(null);
+    setDownloadUrl("");
+    setDownloadName("");
+    setResultAssets(null);
+    setSelectedVolumePath("");
+    setVolumePreview(null);
     appendLog(`Construyendo request ZIP para ${caseId}.`);
 
     for (const file of studyFiles) {
@@ -568,10 +940,11 @@ export default function App() {
       }
 
       setPhase("Downloading");
-      appendLog("Respuesta recibida. Extrayendo reporte.");
+      appendLog("Respuesta recibida. Extrayendo resultado.");
       const responseBlob = await response.blob();
+      const extractedAssets = await extractResultAssets(responseBlob);
       const report =
-        (await parseZipReport(responseBlob)) || {
+        extractedAssets.report || {
           case_id: caseId,
           generated_structures: backendStatus?.generated_structures || [],
           models_used: [],
@@ -590,10 +963,14 @@ export default function App() {
 
       setDownloadUrl(objectUrl);
       setDownloadName(`${caseId}_output.zip`);
+      setResultAssets(extractedAssets);
       setResult(snapshot);
       recordCaseHistory(snapshot);
+      setOpenSections((current) => ({ ...current, resultados: true }));
       setPhase("Completed");
-      appendLog("Caso completado. ZIP listo para descargar.");
+      appendLog(
+        `Caso completado. Salida lista: ${extractedAssets.masks.length} volumen(es) y ${extractedAssets.rtstruct ? "1 RT-STRUCT" : "sin RT-STRUCT"}.`,
+      );
     } catch (error) {
       const cancelled = error?.name === "AbortError";
       const errorMessage = cancelled
@@ -609,8 +986,12 @@ export default function App() {
         errorMessage,
       });
 
+      setResultAssets(null);
+      setSelectedVolumePath("");
+      setVolumePreview(null);
       setResult(snapshot);
       recordCaseHistory(snapshot);
+      setOpenSections((current) => ({ ...current, resultados: true }));
       setPhase(cancelled ? "Cancelled" : "Failed");
       if (!cancelled) {
         appendLog(`Fallo en procesamiento: ${errorMessage}`);
@@ -643,6 +1024,10 @@ export default function App() {
       : phase
     : phase;
   const allPresets = [...presets, ...customPresets];
+  const selectedResultVolume =
+    resultAssets?.masks?.find((asset) => asset.path === selectedVolumePath) ||
+    resultAssets?.masks?.[0] ||
+    null;
 
   const [openSections, setOpenSections] = useState({
     servidor: false,
@@ -952,6 +1337,160 @@ export default function App() {
                       </div>
                     </div>
 
+                    {result.status === "completed" && (
+                      <div className="result-section">
+                        <div className="section-head">
+                          <h4>Archivos de salida</h4>
+                          <span>{resultAssets ? "Disponibles" : "Resumen"}</span>
+                        </div>
+
+                        {resultAssets ? (
+                          <div className="download-list">
+                            {downloadUrl && (
+                              <div className="download-item">
+                                <div>
+                                  <strong>ZIP completo</strong>
+                                  <small>{downloadName} · {bytesToReadable(resultAssets.zipSize)}</small>
+                                </div>
+                                <a
+                                  className="anchor-button"
+                                  href={downloadUrl}
+                                  download={downloadName}
+                                >
+                                  Descargar
+                                </a>
+                              </div>
+                            )}
+
+                            <div className="download-item">
+                              <div>
+                                <strong>Serie CT original</strong>
+                                <small>{resultAssets.ctFileCount} archivo(s) DICOM dentro del ZIP</small>
+                              </div>
+                              <span className="download-meta">Incluida</span>
+                            </div>
+
+                            <div className="download-item">
+                              <div>
+                                <strong>RT-STRUCT DICOM</strong>
+                                <small>
+                                  {resultAssets.rtstruct
+                                    ? `${resultAssets.rtstruct.name} · ${bytesToReadable(resultAssets.rtstruct.size)}`
+                                    : "No encontrado en la respuesta"}
+                                </small>
+                              </div>
+                              {resultAssets.rtstruct ? (
+                                <a
+                                  className="anchor-button"
+                                  href={resultAssets.rtstruct.url}
+                                  download={resultAssets.rtstruct.name}
+                                >
+                                  Descargar
+                                </a>
+                              ) : (
+                                <span className="download-meta warning">Falta</span>
+                              )}
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="empty-result compact">
+                            <p>Este historial solo conserva el resumen local del caso.</p>
+                            <small>Los archivos del resultado se pueden bajar al terminar el proceso actual.</small>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {result.status === "completed" && (
+                      <div className="result-section">
+                        <div className="section-head">
+                          <h4>Volumenes generados</h4>
+                          <span>{resultAssets?.masks?.length || 0}</span>
+                        </div>
+
+                        {resultAssets?.masks?.length ? (
+                          <div className="volume-browser">
+                            <div className="volume-list">
+                              {resultAssets.masks.map((asset) => (
+                                <div
+                                  className={`volume-item ${selectedResultVolume?.path === asset.path ? "active" : ""}`}
+                                  key={asset.path}
+                                >
+                                  <button
+                                    className="volume-select"
+                                    onClick={() => setSelectedVolumePath(asset.path)}
+                                  >
+                                    <strong>{asset.label}</strong>
+                                    <small>
+                                      {asset.name} · {bytesToReadable(asset.size)}
+                                    </small>
+                                  </button>
+                                  <a
+                                    className="pill-button"
+                                    href={asset.url}
+                                    download={asset.name}
+                                  >
+                                    NIfTI
+                                  </a>
+                                </div>
+                              ))}
+                            </div>
+
+                            <div className="volume-preview-card">
+                              {volumePreview?.status === "loading" && (
+                                <div className="empty-result compact">
+                                  <p>Cargando vista previa del volumen...</p>
+                                </div>
+                              )}
+
+                              {volumePreview?.status === "error" && (
+                                <div className="empty-result compact">
+                                  <p>No se pudo abrir {volumePreview.label}.</p>
+                                  <small>{volumePreview.message}</small>
+                                </div>
+                              )}
+
+                              {volumePreview?.status === "ready" && (
+                                <>
+                                  <div className="volume-preview-head">
+                                    <div>
+                                      <strong>{volumePreview.label}</strong>
+                                      <small>{volumePreview.name}</small>
+                                    </div>
+                                    <span className="status-badge neutral">
+                                      Slice {volumePreview.sliceIndex + 1}/{volumePreview.sliceCount}
+                                    </span>
+                                  </div>
+
+                                  <div className="volume-preview-meta">
+                                    <span>Dims: {volumePreview.dimensions.join(" x ")}</span>
+                                    <span>Spacing: {formatSpacing(volumePreview.spacing)} mm</span>
+                                    <span>Tipo: {volumePreview.datatypeLabel}</span>
+                                    <span>Activos: {volumePreview.nonZeroPercent.toFixed(2)}%</span>
+                                  </div>
+
+                                  <div className="volume-preview-frame">
+                                    <img
+                                      src={volumePreview.previewUrl}
+                                      alt={`Vista previa axial de ${volumePreview.label}`}
+                                    />
+                                  </div>
+
+                                  <small className="volume-preview-note">
+                                    Se muestra el slice axial con mayor cantidad de voxeles activos.
+                                  </small>
+                                </>
+                              )}
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="empty-result compact">
+                            <p>No hay mascaras NIfTI expuestas en el ZIP de salida.</p>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
                     {result.error_message && (
                       <div className="error-banner">{result.error_message}</div>
                     )}
@@ -965,12 +1504,6 @@ export default function App() {
                       <span>Servidor: {result.server_url || "N/D"}</span>
                       <span>Registrado: {formatTimestamp(result.completed_at)}</span>
                     </div>
-
-                    {downloadUrl && (
-                      <a className="primary-button anchor-button" href={downloadUrl} download={downloadName}>
-                        Descargar ZIP
-                      </a>
-                    )}
                   </div>
                 ) : (
                   <div className="empty-result">
@@ -1055,14 +1588,30 @@ export default function App() {
         <div className="stage-preview">
           {studyMeta?.previewUrl ? (
             <figure className="preview-figure">
-              <img
-                className="preview-image"
-                src={studyMeta.previewUrl}
-                alt="Preview del slice DICOM"
-              />
+              {slices.length > 0 ? (
+                <DicomCanvas
+                  slices={slices}
+                  initialSliceIndex={Math.floor(slices.length / 2)}
+                  windowCenter={studyMeta.previewWindowCenter}
+                  windowWidth={studyMeta.previewWindowWidth}
+                  onWindowChange={(wc, ww) => setViewWindow({ wc, ww })}
+                  onSliceChange={(index, total) => setSliceInfo({ index, total })}
+                />
+              ) : (
+                <img
+                  className="preview-image"
+                  src={studyMeta.previewUrl}
+                  alt="Preview del slice DICOM"
+                />
+              )}
               <figcaption className="preview-caption">
-                <span>Slice {studyMeta.instanceNumber || "N/D"} · {studyMeta.rows} × {studyMeta.columns}</span>
-                <span>WC {studyMeta.previewWindowCenter ?? "N/D"} / WW {studyMeta.previewWindowWidth ?? "N/D"}</span>
+                <span>
+                  {slices.length > 0
+                    ? `Slice ${sliceInfo.index + 1}/${sliceInfo.total}`
+                    : `Slice ${studyMeta.instanceNumber || "N/D"}`}
+                  {" · "}{studyMeta.rows} × {studyMeta.columns}
+                </span>
+                <span>WC {viewWindow?.wc ?? studyMeta.previewWindowCenter ?? "N/D"} / WW {viewWindow?.ww ?? studyMeta.previewWindowWidth ?? "N/D"}</span>
               </figcaption>
             </figure>
           ) : (

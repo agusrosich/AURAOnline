@@ -18,6 +18,24 @@ function readString(dataSet, tag) {
 }
 
 function readNumber(dataSet, tag, fallback = 0) {
+  const readers = [
+    () => dataSet.intString(tag),
+    () => dataSet.floatString(tag),
+    () => dataSet.uint16(tag),
+    () => dataSet.int16(tag),
+  ];
+
+  for (const reader of readers) {
+    try {
+      const value = reader();
+      if (Number.isFinite(value)) {
+        return value;
+      }
+    } catch {
+      // Intentar con el siguiente reader.
+    }
+  }
+
   const raw = readString(dataSet, tag);
   if (!raw) {
     return fallback;
@@ -28,6 +46,35 @@ function readNumber(dataSet, tag, fallback = 0) {
 }
 
 function readNumberList(dataSet, tag) {
+  const values = [];
+  for (let index = 0; index < 16; index += 1) {
+    let value = Number.NaN;
+
+    try {
+      value = dataSet.floatString(tag, index);
+    } catch {
+      value = Number.NaN;
+    }
+
+    if (!Number.isFinite(value)) {
+      try {
+        value = dataSet.intString(tag, index);
+      } catch {
+        value = Number.NaN;
+      }
+    }
+
+    if (!Number.isFinite(value)) {
+      break;
+    }
+
+    values.push(value);
+  }
+
+  if (values.length) {
+    return values;
+  }
+
   const raw = readString(dataSet, tag);
   if (!raw) {
     return [];
@@ -299,6 +346,8 @@ function buildPreviewImage(dataSet) {
     columns,
     windowCenter,
     windowWidth,
+    pixelData: huValues,
+    invert,
   };
 }
 
@@ -408,6 +457,41 @@ async function selectPreviewCandidate(files) {
   };
 }
 
+export async function loadAllDicomSlices(files) {
+  const orderedFiles = sortedFiles(files);
+  const candidates = [];
+
+  for (const file of orderedFiles) {
+    const candidate = await loadDicomCandidate(file);
+    if (candidate.dataSet && candidate.previewSupported) {
+      candidates.push(candidate);
+    }
+  }
+
+  if (!candidates.length) return [];
+
+  const sorted = sortPreviewCandidates(candidates);
+  const slices = [];
+
+  for (const c of sorted) {
+    try {
+      const result = buildPreviewImage(c.dataSet);
+      slices.push({
+        pixelData: result.pixelData,
+        rows: result.rows,
+        columns: result.columns,
+        invert: result.invert,
+        windowCenter: result.windowCenter,
+        windowWidth: result.windowWidth,
+      });
+    } catch {
+      // ignorar slices que no se pueden decodificar
+    }
+  }
+
+  return slices;
+}
+
 export async function inspectDicomFiles(files) {
   const selection = await selectPreviewCandidate(files);
   const previewCandidate = selection.candidate;
@@ -440,8 +524,10 @@ export async function inspectDicomFiles(files) {
       columns: previewStats?.columns || readNumber(dataSet, "x00280011", 0) || "N/D",
       previewUrl,
       previewError,
-      previewWindowCenter: previewStats?.windowCenter || null,
-      previewWindowWidth: previewStats?.windowWidth || null,
+      previewWindowCenter: previewStats?.windowCenter ?? null,
+      previewWindowWidth: previewStats?.windowWidth ?? null,
+      pixelData: previewStats?.pixelData ?? null,
+      pixelInvert: previewStats?.invert ?? false,
       sourceFileName: previewFile.name,
       parseError: selection.parseError || "",
     };

@@ -39,6 +39,7 @@ button { cursor: pointer; }
   display: grid;
   grid-template-columns: 260px 1fr;
   overflow: hidden;
+  min-height: 0;
 }
 
 /* ── Sidebar ── */
@@ -49,6 +50,7 @@ button { cursor: pointer; }
   flex-direction: column;
   height: 100vh;
   overflow: hidden;
+  min-height: 0;
 }
 
 .sidebar-brand {
@@ -78,6 +80,7 @@ button { cursor: pointer; }
 /* ── Accordion ── */
 .accordion {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
   scrollbar-width: thin;
@@ -414,6 +417,7 @@ button { cursor: pointer; }
   height: 100vh;
   overflow: hidden;
   background: var(--bg-app);
+  min-height: 0;
 }
 
 /* ── Topbar ── */
@@ -477,6 +481,7 @@ button { cursor: pointer; }
   overflow: hidden;
   background: #111111;
   border-bottom: 1px solid var(--border);
+  min-height: 0;
 }
 
 .preview-figure {
@@ -598,6 +603,168 @@ button { cursor: pointer; }
 }
 .result-item small { color: var(--text-3); font-size: 10px; }
 
+.download-list {
+  display: grid;
+  gap: 4px;
+}
+
+.download-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 11px;
+  color: var(--text-1);
+}
+
+.download-item strong {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.download-item small {
+  display: block;
+  color: var(--text-3);
+  font-size: 10px;
+  margin-top: 2px;
+}
+
+.download-meta {
+  color: var(--text-3);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.download-meta.warning { color: var(--warning); }
+
+.volume-browser {
+  display: grid;
+  grid-template-columns: minmax(0, 180px) minmax(0, 1fr);
+  gap: 6px;
+}
+
+.volume-list {
+  display: grid;
+  gap: 4px;
+  align-content: start;
+}
+
+.volume-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: center;
+  padding: 4px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.volume-item.active {
+  border-color: #4a8fcb;
+  box-shadow: inset 0 0 0 1px rgba(74,143,203,0.24);
+}
+
+.volume-select {
+  background: transparent;
+  border: none;
+  color: inherit;
+  padding: 2px 4px;
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.volume-select strong {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.volume-select small {
+  display: block;
+  color: var(--text-3);
+  font-size: 10px;
+  margin-top: 2px;
+}
+
+.volume-preview-card {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.volume-preview-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.volume-preview-head strong {
+  display: block;
+  color: var(--text-1);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.volume-preview-head small {
+  display: block;
+  color: var(--text-3);
+  font-size: 10px;
+  margin-top: 2px;
+}
+
+.volume-preview-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.volume-preview-meta span {
+  font-size: 10px;
+  color: var(--text-3);
+  padding: 2px 6px;
+  background: rgba(255,255,255,0.03);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+.volume-preview-frame {
+  min-height: 180px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background:
+    radial-gradient(circle at top, rgba(74,143,203,0.12), transparent 52%),
+    #071018;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.volume-preview-frame img {
+  width: 100%;
+  height: auto;
+  max-height: 320px;
+  object-fit: contain;
+  image-rendering: pixelated;
+}
+
+.volume-preview-note {
+  color: var(--text-3);
+  font-size: 10px;
+}
+
 .empty-result {
   padding: 10px;
   background: var(--bg-input);
@@ -646,4 +813,6 @@ button { cursor: pointer; }
 @media (max-width: 600px) {
   .stage-metrics { grid-template-columns: repeat(2, 1fr); }
   .topbar h2 { font-size: 11px; }
+  .volume-browser { grid-template-columns: 1fr; }
+  .download-item { align-items: flex-start; flex-direction: column; }
 }
