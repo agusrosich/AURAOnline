@@ -61,6 +61,26 @@ function normalizeServerUrl(value) {
   return (value || "").trim().replace(/\/+$/, "");
 }
 
+function parseServerUrl(value) {
+  const normalizedValue = normalizeServerUrl(value);
+  if (!normalizedValue) {
+    throw new Error("Ingresa la URL del backend.");
+  }
+
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(normalizedValue);
+  } catch {
+    throw new Error("La URL del backend no es valida. Usa http:// o https://.");
+  }
+
+  if (!["http:", "https:"].includes(parsedUrl.protocol)) {
+    throw new Error("La URL del backend debe usar http:// o https://.");
+  }
+
+  return parsedUrl;
+}
+
 function loadQueryServerUrl() {
   const params = new URLSearchParams(window.location.search);
   for (const key of SERVER_URL_QUERY_KEYS) {
@@ -90,17 +110,35 @@ function clearServerUrlQueryParams() {
 }
 
 function buildBackendUrl(serverUrl, path) {
-  return `${normalizeServerUrl(serverUrl)}${path}`;
+  const parsedUrl = parseServerUrl(serverUrl);
+  const baseUrl = parsedUrl.toString().endsWith("/") ? parsedUrl.toString() : `${parsedUrl}/`;
+  return new URL(path.replace(/^\/+/, ""), baseUrl).toString();
 }
 
-function buildBackendFetchOptions(options = {}) {
+function buildBackendFetchOptions(serverUrl, options = {}) {
+  const headers = {
+    ...(options.headers || {}),
+  };
+  if (parseServerUrl(serverUrl).hostname.includes("ngrok")) {
+    Object.assign(headers, NGROK_SKIP_WARNING_HEADERS);
+  }
   return {
     ...options,
-    headers: {
-      ...NGROK_SKIP_WARNING_HEADERS,
-      ...(options.headers || {}),
-    },
+    headers,
   };
+}
+
+function explainConnectionError(error) {
+  if (error instanceof TypeError) {
+    return "El navegador no pudo completar la solicitud. Revisa la URL, que el backend siga activo y que CORS este habilitado.";
+  }
+  if (error instanceof Error) {
+    if (error.message.startsWith("HTTP ")) {
+      return `El backend respondio ${error.message}.`;
+    }
+    return error.message;
+  }
+  return "No se pudo validar la conexion con el backend.";
 }
 
 function buildDicomArchivePath(file) {
@@ -544,6 +582,7 @@ export default function App() {
     label: "Sin verificar",
     tone: "neutral",
   });
+  const [connectionDetail, setConnectionDetail] = useState("");
   const [backendStatus, setBackendStatus] = useState(null);
   const [studyFiles, setStudyFiles] = useState([]);
   const [studyMeta, setStudyMeta] = useState(null);
@@ -717,7 +756,7 @@ export default function App() {
       try {
         const response = await fetch(
           buildBackendUrl(serverUrl, "/status"),
-          buildBackendFetchOptions(),
+          buildBackendFetchOptions(serverUrl),
         );
         if (!response.ok) {
           return;
@@ -780,19 +819,23 @@ export default function App() {
 
   async function verifyConnection() {
     setConnectionState({ label: "Verificando...", tone: "neutral" });
+    setConnectionDetail("");
     try {
       const response = await fetch(
         buildBackendUrl(serverUrl, "/health"),
-        buildBackendFetchOptions(),
+        buildBackendFetchOptions(serverUrl),
       );
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`);
       }
       setConnectionState({ label: "Conectado", tone: "success" });
+      setConnectionDetail("");
       appendLog("Conexion con backend validada por /health.");
     } catch (error) {
+      const detail = explainConnectionError(error);
       setConnectionState({ label: "Sin conexion", tone: "danger" });
-      appendLog(`Error de conexion: ${error.message}`);
+      setConnectionDetail(detail);
+      appendLog(`Error de conexion: ${detail}`);
     }
   }
 
@@ -966,7 +1009,7 @@ export default function App() {
       appendLog("Enviando estudio al backend.");
       const response = await fetch(
         buildBackendUrl(serverUrl, "/segment"),
-        buildBackendFetchOptions({
+        buildBackendFetchOptions(serverUrl, {
           method: "POST",
           body: formData,
           signal: controller.signal,
@@ -1102,7 +1145,10 @@ export default function App() {
                 <input
                   className="text-input"
                   value={serverUrl}
-                  onChange={(e) => setServerUrl(e.target.value)}
+                  onChange={(e) => {
+                    setServerUrl(e.target.value);
+                    setConnectionDetail("");
+                  }}
                   placeholder="https://xxxxx.ngrok-free.app"
                 />
                 <button className="primary-button full-width" onClick={verifyConnection}>
@@ -1112,6 +1158,7 @@ export default function App() {
                   La URL queda guardada en este navegador. Tambien podes abrir la app con
                   <code>?backend=https://...</code>.
                 </p>
+                {connectionDetail && <div className="error-banner">{connectionDetail}</div>}
               </div>
             )}
           </div>

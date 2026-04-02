@@ -3,8 +3,17 @@ from __future__ import annotations
 import os
 
 
-def _split_csv(value: str) -> list[str]:
+def _split_csv(value: str | None) -> list[str]:
+    if not value:
+        return []
     return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _normalize_cors_origins(value: str | None) -> tuple[bool, list[str]]:
+    origins = _split_csv(value)
+    if not origins or "*" in origins:
+        return True, ["*"]
+    return False, origins
 
 
 class BackendSettings:
@@ -17,11 +26,8 @@ class BackendSettings:
         self.host = os.environ.get("AURA_RT_HOST", "0.0.0.0")
         self.port = int(os.environ.get("AURA_RT_PORT", "8000"))
         self.log_level = os.environ.get("AURA_RT_LOG_LEVEL", "INFO").upper()
-        self.cors_origins = _split_csv(
-            os.environ.get(
-                "AURA_RT_CORS_ORIGINS",
-                "http://localhost:5173,http://127.0.0.1:5173",
-            )
+        self.cors_allow_all, self.cors_origins = _normalize_cors_origins(
+            os.environ.get("AURA_RT_CORS_ORIGINS", "*")
         )
 
 

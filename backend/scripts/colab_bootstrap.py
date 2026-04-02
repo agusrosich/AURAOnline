@@ -17,6 +17,7 @@ CACHE_ROOT_DEFAULT = Path(
 )
 WEBAPP_URL = os.environ.get("AURA_RT_WEBAPP_URL", "http://127.0.0.1:5173").strip()
 WEBAPP_QUERY_PARAM = os.environ.get("AURA_RT_WEBAPP_QUERY_PARAM", "backend").strip() or "backend"
+LEGACY_DEV_CORS_ORIGINS = "http://localhost:5173,http://127.0.0.1:5173"
 
 
 def run_command(command: list[str]) -> None:
@@ -42,6 +43,11 @@ def prepare_environment(cache_root: Path) -> None:
     os.environ.setdefault("TOTALSEG_HOME_DIR", str(cache_root / "totalsegmentator"))
     os.environ.setdefault("AURA_RT_MODEL_CACHE", str(cache_root))
     os.environ.setdefault("AURA_RT_LOG_LEVEL", "INFO")
+    if (
+        not os.environ.get("AURA_RT_CORS_ORIGINS")
+        or os.environ.get("AURA_RT_CORS_ORIGINS") == LEGACY_DEV_CORS_ORIGINS
+    ):
+        os.environ["AURA_RT_CORS_ORIGINS"] = "*"
 
 
 def start_uvicorn() -> None:
