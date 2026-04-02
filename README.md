@@ -48,6 +48,7 @@ webapp/
   .env.example
 scripts/
   run_backend.ps1
+  run_backend.bat
   run_webapp.ps1
   run_webapp.bat
 ```
@@ -71,8 +72,15 @@ python -m uvicorn aura_rt_backend.main:app --app-dir backend --host 0.0.0.0 --po
 Ejecucion con script:
 
 ```powershell
-Copy-Item backend\.env.example backend\.env
 .\scripts\run_backend.ps1
+```
+
+Si `backend/.env` no existe, el script lo genera automaticamente a partir de `backend/.env.example`.
+
+En Windows tambien podes usar:
+
+```bat
+scripts\run_backend.bat
 ```
 
 ## Web App

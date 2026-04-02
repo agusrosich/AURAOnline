@@ -6,6 +6,8 @@ __pycache__/
 .venv/
 venv/
 env/
+backend/.env
+webapp/.env
 
 client/output/
 backend/tmp/
@@ -14,4 +16,3 @@ backend/tmp/
 *.dcm
 webapp/node_modules/
 webapp/dist/
-

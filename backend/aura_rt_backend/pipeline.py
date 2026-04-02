@@ -529,6 +529,14 @@ def _resolve_structure_groups(structure_keys: list[str]) -> dict[str, list[Struc
     return dict(grouped)
 
 
+def _apply_gaussian_smoothing(mask_path: Path, sigma_mm: float = 3.0) -> None:
+    """Aplica desenfoque gaussiano a una mascara binaria y la re-binariza con umbral 0.5."""
+    image = sitk.Cast(sitk.ReadImage(str(mask_path)), sitk.sitkFloat32)
+    smoothed = sitk.SmoothingRecursiveGaussian(image, sigma=sigma_mm)
+    binary = sitk.Cast(smoothed > 0.5, sitk.sitkUInt8)
+    sitk.WriteImage(binary, str(mask_path))
+
+
 def _build_union_mask(source_masks: list[Path], destination: Path) -> None:
     combined_image = None
     for mask_path in source_masks:
@@ -569,6 +577,7 @@ def _materialize_masks(
         else:
             source_paths = [generated_mask_dir / f"{roi_name}.nii.gz" for roi_name in definition.roi_names]
             _build_union_mask(source_paths, target_path)
+        _apply_gaussian_smoothing(target_path, sigma_mm=3.0)
         results[definition.clinical_name] = (target_path, definition.color)
 
     return results
