@@ -531,10 +531,14 @@ def _resolve_structure_groups(structure_keys: list[str]) -> dict[str, list[Struc
 
 def _apply_gaussian_smoothing(mask_path: Path, sigma_mm: float = 3.0) -> None:
     """Aplica desenfoque gaussiano a una mascara binaria y la re-binariza con umbral 0.5."""
+    gaussian = sitk.SmoothingRecursiveGaussianImageFilter()
+    gaussian.SetSigma(sigma_mm)
+    gaussian.SetNormalizeAcrossScale(False)
+
     image = sitk.Cast(sitk.ReadImage(str(mask_path)), sitk.sitkFloat32)
-    smoothed = sitk.SmoothingRecursiveGaussian(image, sigma=sigma_mm)
-    binary = sitk.Cast(smoothed > 0.5, sitk.sitkUInt8)
-    sitk.WriteImage(binary, str(mask_path))
+    smoothed = gaussian.Execute(image)
+    binary = sitk.BinaryThreshold(smoothed, lowerThreshold=0.5, upperThreshold=1e6, insideValue=1, outsideValue=0)
+    sitk.WriteImage(sitk.Cast(binary, sitk.sitkUInt8), str(mask_path))
 
 
 def _build_union_mask(source_masks: list[Path], destination: Path) -> None:
@@ -577,7 +581,6 @@ def _materialize_masks(
         else:
             source_paths = [generated_mask_dir / f"{roi_name}.nii.gz" for roi_name in definition.roi_names]
             _build_union_mask(source_paths, target_path)
-        _apply_gaussian_smoothing(target_path, sigma_mm=3.0)
         results[definition.clinical_name] = (target_path, definition.color)
 
     return results
@@ -731,6 +734,19 @@ def process_archive(
                 code="no_output_masks",
                 hint="Revisa si las ROI solicitadas estan disponibles para la anatomia del estudio enviado.",
             )
+
+        status_tracker.update(
+            message="Aplicando suavizado gaussiano (3 mm)",
+            phase="postprocessing",
+            progress_percent=80,
+        )
+        for mask_path, _ in generated_masks.values():
+            _apply_gaussian_smoothing(mask_path, sigma_mm=3.0)
+        logger.info("Suavizado gaussiano aplicado a %d mascara(s)", len(generated_masks))
+        status_tracker.set_preview_masks(
+            config.anonymized_id,
+            {clinical_name: mask_path for clinical_name, (mask_path, _) in generated_masks.items()},
+        )
 
         status_tracker.update(
             message="Construyendo DICOM RT-STRUCT",

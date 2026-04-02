@@ -26,6 +26,8 @@ class StatusResponse(BaseModel):
     current_case_id: Optional[str] = None
     requested_structures: list[str] = Field(default_factory=list)
     generated_structures: list[str] = Field(default_factory=list)
+    preview_ready: bool = False
+    preview_structures: list[str] = Field(default_factory=list)
     active_model: Optional[str] = None
     phase: str = "idle"
     progress_percent: int = 0

@@ -14,7 +14,8 @@ const STORAGE_KEYS = {
 const SERVER_URL_QUERY_KEYS = ["backend", "server", "serverUrl"];
 const DEFAULT_SERVER_URL =
   import.meta.env.VITE_AURA_RT_DEFAULT_SERVER_URL || "http://127.0.0.1:8000";
-const POLL_INTERVAL_MS = Number(import.meta.env.VITE_AURA_RT_POLL_INTERVAL_MS || 5000);
+const POLL_INTERVAL_MS = Number(import.meta.env.VITE_AURA_RT_POLL_INTERVAL_MS || 800);
+const PREVIEW_DRAW_INTERVAL_MS = Number(import.meta.env.VITE_AURA_RT_PREVIEW_DRAW_INTERVAL_MS || 140);
 const CASE_HISTORY_LIMIT = 8;
 const CUSTOM_PRESET_LIMIT = 8;
 
@@ -28,8 +29,18 @@ const STRUCTURE_COLORS = {
   Aorta:            [255, 64,  64],
   Stomach:          [255, 153, 51],
   Bowel:            [255, 204, 0],
+  Lung_R:           [102, 204, 255],
+  Lung_L:           [51,  153, 204],
+  Heart:            [255, 80,  80],
+  Trachea:          [102, 255, 204],
+  Esophagus:        [255, 170, 102],
+  Vertebrae:        [210, 180, 140],
+  Pelvis_Bone:      [196, 164, 132],
+  Femurs:           [184, 134, 11],
+  Ribs:             [222, 184, 135],
   Brain:            [204, 102, 255],
   Prostate:         [255, 153, 153],
+  Bladder:          [255, 230, 128],
   PenileBulb:       [255, 102, 102],
   PelvicLymphNodes: [255, 204, 153],
 };
@@ -52,8 +63,18 @@ const structureLabelMap = structureGroups
   .flatMap((group) => group.items)
   .reduce((labels, item) => {
     labels[item.key] = item.label;
+    if (item.clinicalName) {
+      labels[item.clinicalName] = item.label;
+    }
     return labels;
   }, {});
+
+const readyStructureKeys = new Set(
+  structureGroups
+    .flatMap((group) => group.items)
+    .filter((item) => item.status === "ready")
+    .map((item) => item.key),
+);
 
 function loadStoredJson(key, fallback) {
   try {
@@ -240,6 +261,58 @@ function createArchiveAsset(path, bytes) {
   };
 }
 
+function createMaskOverlay(label, bytes) {
+  const volume = parseNiftiMaskVolume(bytes);
+  const color = STRUCTURE_COLORS[label] ?? [255, 255, 0];
+  let nonZeroCount = 0;
+  for (const slice of volume.slices) {
+    for (let index = 0; index < slice.length; index += 1) {
+      if (slice[index]) {
+        nonZeroCount += 1;
+      }
+    }
+  }
+  const [sx, sy, sz] = volume.spacing ?? [1, 1, 1];
+  const volumeMl = (nonZeroCount * sx * sy * sz) / 1000;
+  return { label, color, nonZeroCount, volumeMl, ...volume };
+}
+
+function sliceHasActiveVoxel(slice) {
+  if (!slice) {
+    return false;
+  }
+  for (let index = 0; index < slice.length; index += 1) {
+    if (slice[index]) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function buildPreviewSteps(overlays, structureOrder) {
+  const overlayByLabel = new Map(overlays.map((overlay) => [overlay.label, overlay]));
+  const orderedLabels = structureOrder.filter((label) => overlayByLabel.has(label));
+  const steps = [];
+
+  orderedLabels.forEach((label, structureIndex) => {
+    const overlay = overlayByLabel.get(label);
+    overlay.slices.forEach((slice, sliceIndex) => {
+      if (!sliceHasActiveVoxel(slice)) {
+        return;
+      }
+      steps.push({
+        label,
+        structureIndex,
+        structureTotal: orderedLabels.length,
+        sliceIndex,
+        sliceTotal: overlay.slices.length,
+      });
+    });
+  });
+
+  return steps;
+}
+
 async function extractResultAssets(blob) {
   const buffer = await blob.arrayBuffer();
   const archive = unzipSync(new Uint8Array(buffer));
@@ -294,6 +367,18 @@ async function readErrorDetail(response) {
   return response.text();
 }
 
+function normalizeSupportedStructures(payload) {
+  if (!payload || typeof payload !== "object" || !Array.isArray(payload.supported_structures)) {
+    return null;
+  }
+  return [...new Set(
+    payload.supported_structures
+      .filter((key) => typeof key === "string")
+      .map((key) => key.trim())
+      .filter(Boolean),
+  )].sort();
+}
+
 function phaseLabel(phase) {
   const labels = {
     idle: "Idle",
@@ -317,8 +402,25 @@ function phaseLabel(phase) {
   return labels[phase] || phase || "Idle";
 }
 
+function buildPreviewMaskUrl(serverUrl, caseId, structureName) {
+  return buildBackendUrl(
+    serverUrl,
+    `/preview/${encodeURIComponent(caseId)}/mask/${encodeURIComponent(structureName)}`,
+  );
+}
+
 function structureLabel(key) {
   return structureLabelMap[key] || key;
+}
+
+function structureAvailabilityText(item, backendSupportedStructureSet) {
+  if (item.status !== "ready") {
+    return "Planned";
+  }
+  if (backendSupportedStructureSet && !backendSupportedStructureSet.has(item.key)) {
+    return "No en backend";
+  }
+  return "Disponible";
 }
 
 function statusTone(status) {
@@ -370,13 +472,25 @@ function buildCaseSnapshot({
   };
 }
 
-function DicomCanvas({ slices, initialSliceIndex, windowCenter: initWC, windowWidth: initWW, onWindowChange, onSliceChange, overlays }) {
+function DicomCanvas({
+  slices,
+  initialSliceIndex,
+  windowCenter: initWC,
+  windowWidth: initWW,
+  onWindowChange,
+  onSliceChange,
+  overlays,
+  forcedSliceIndex = null,
+  overlayProgress = null,
+}) {
   const canvasRef = useRef(null);
   const offscreenRef = useRef(null);
   const overlayOffscreenRef = useRef(null);
   const slicesRef = useRef(slices);
   const overlaysRef = useRef(overlays);
   overlaysRef.current = overlays;
+  const overlayProgressRef = useRef(overlayProgress);
+  overlayProgressRef.current = overlayProgress;
   const onSliceChangeRef = useRef(onSliceChange);
   const onWindowChangeRef = useRef(onWindowChange);
   onSliceChangeRef.current = onSliceChange;
@@ -418,6 +532,10 @@ function DicomCanvas({ slices, initialSliceIndex, windowCenter: initWC, windowWi
       overlayOffscreenRef.current = null;
       return;
     }
+    const progress = overlayProgressRef.current;
+    const completedLabels = progress?.completedLabels?.length
+      ? new Set(progress.completedLabels)
+      : null;
     const { columns, rows } = slice;
     const oc = document.createElement("canvas");
     oc.width = columns;
@@ -426,6 +544,15 @@ function DicomCanvas({ slices, initialSliceIndex, windowCenter: initWC, windowWi
     const imageData = ctx.createImageData(columns, rows);
     for (const ov of ovList) {
       if (!ov.slices) continue;
+      if (progress) {
+        const isCompleted = completedLabels?.has(ov.label);
+        const isActive = ov.label === progress.activeLabel;
+        const isVisible =
+          isCompleted || (isActive && viewRef.current.sliceIndex <= progress.activeSliceIndex);
+        if (!isVisible) {
+          continue;
+        }
+      }
       const maskSlice = ov.slices[viewRef.current.sliceIndex];
       if (!maskSlice) continue;
       const [r, g, b] = ov.color;
@@ -509,7 +636,22 @@ function DicomCanvas({ slices, initialSliceIndex, windowCenter: initWC, windowWi
   useEffect(() => {
     buildOverlay();
     draw();
-  }, [overlays, buildOverlay, draw]);
+  }, [overlays, overlayProgress, buildOverlay, draw]);
+
+  useEffect(() => {
+    if (!Number.isInteger(forcedSliceIndex) || !slicesRef.current.length) {
+      return;
+    }
+    const nextIndex = Math.max(0, Math.min(slicesRef.current.length - 1, forcedSliceIndex));
+    if (nextIndex === viewRef.current.sliceIndex) {
+      return;
+    }
+    viewRef.current.sliceIndex = nextIndex;
+    renderPixels();
+    buildOverlay();
+    draw();
+    onSliceChangeRef.current?.(nextIndex, slicesRef.current.length);
+  }, [forcedSliceIndex, renderPixels, buildOverlay, draw]);
 
   // Rueda → navegar slices
   const handleWheel = useCallback((e) => {
@@ -630,6 +772,7 @@ export default function App() {
   const fileInputRef = useRef(null);
   const abortRef = useRef(null);
   const initialQueryServerUrlRef = useRef(loadQueryServerUrl());
+  const previewLoadKeyRef = useRef("");
 
   const [serverUrl, setServerUrl] = useState(
     () =>
@@ -642,6 +785,7 @@ export default function App() {
     tone: "neutral",
   });
   const [connectionDetail, setConnectionDetail] = useState("");
+  const [backendInfo, setBackendInfo] = useState(null);
   const [backendStatus, setBackendStatus] = useState(null);
   const [studyFiles, setStudyFiles] = useState([]);
   const [studyMeta, setStudyMeta] = useState(null);
@@ -666,6 +810,9 @@ export default function App() {
   const [resultAssets, setResultAssets] = useState(null);
   const [selectedVolumePath, setSelectedVolumePath] = useState("");
   const [volumePreview, setVolumePreview] = useState(null);
+  const [livePreviewCaseId, setLivePreviewCaseId] = useState("");
+  const [livePreviewOverlays, setLivePreviewOverlays] = useState([]);
+  const [livePreviewCursor, setLivePreviewCursor] = useState(0);
   const [maskOverlays, setMaskOverlays] = useState([]);
   const [hiddenStructures, setHiddenStructures] = useState([]);
   const [structureColorOverrides, setStructureColorOverrides] = useState({});
@@ -674,6 +821,63 @@ export default function App() {
     const storedValue = loadStoredJson(STORAGE_KEYS.caseHistory, []);
     return Array.isArray(storedValue) ? storedValue : [];
   });
+  const backendSupportedStructures = useMemo(
+    () => normalizeSupportedStructures(backendInfo),
+    [backendInfo],
+  );
+  const backendSupportedStructureSet = useMemo(
+    () => (backendSupportedStructures ? new Set(backendSupportedStructures) : null),
+    [backendSupportedStructures],
+  );
+  const backendSupportedStructureCount = backendSupportedStructures?.length ?? null;
+  const livePreviewActive = Boolean(
+    isSubmitting &&
+    livePreviewOverlays.length > 0 &&
+    livePreviewCaseId &&
+    livePreviewCaseId === backendStatus?.current_case_id,
+  );
+  const livePreviewStructureOrder = useMemo(() => {
+    const overlayLabels = new Set(livePreviewOverlays.map((overlay) => overlay.label));
+    const preferredOrder = Array.isArray(backendStatus?.preview_structures)
+      ? backendStatus.preview_structures.filter((label) => overlayLabels.has(label))
+      : [];
+    const remaining = livePreviewOverlays
+      .map((overlay) => overlay.label)
+      .filter((label) => !preferredOrder.includes(label));
+    return [...preferredOrder, ...remaining];
+  }, [backendStatus?.preview_structures, livePreviewOverlays]);
+  const livePreviewSteps = useMemo(
+    () => buildPreviewSteps(livePreviewOverlays, livePreviewStructureOrder),
+    [livePreviewOverlays, livePreviewStructureOrder],
+  );
+  const livePreviewAnimating =
+    livePreviewActive && backendStatus?.phase === "rtstruct" && livePreviewSteps.length > 0;
+  const activePreviewStep = livePreviewAnimating
+    ? livePreviewSteps[Math.min(livePreviewCursor, livePreviewSteps.length - 1)]
+    : null;
+  const previewCompletedLabels = useMemo(
+    () => (activePreviewStep ? livePreviewStructureOrder.slice(0, activePreviewStep.structureIndex) : []),
+    [activePreviewStep, livePreviewStructureOrder],
+  );
+  const viewerOverlaySource = livePreviewActive ? livePreviewOverlays : maskOverlays;
+  const viewerForcedSliceIndex = activePreviewStep?.sliceIndex ?? null;
+  const overlayProgress = activePreviewStep
+    ? {
+        activeLabel: activePreviewStep.label,
+        activeSliceIndex: activePreviewStep.sliceIndex,
+        completedLabels: previewCompletedLabels,
+      }
+    : null;
+
+  const isStructureSelectable = useCallback((key) => {
+    if (!readyStructureKeys.has(key)) {
+      return false;
+    }
+    if (!backendSupportedStructureSet) {
+      return true;
+    }
+    return backendSupportedStructureSet.has(key);
+  }, [backendSupportedStructureSet]);
 
   useEffect(() => {
     window.localStorage.setItem(STORAGE_KEYS.serverUrl, serverUrl);
@@ -690,6 +894,23 @@ export default function App() {
   useEffect(() => {
     window.localStorage.setItem(STORAGE_KEYS.caseHistory, JSON.stringify(caseHistory));
   }, [caseHistory]);
+
+  useEffect(() => {
+    if (!backendSupportedStructureSet) {
+      return;
+    }
+    setSelectedStructures((current) => {
+      const filtered = current.filter((key) => backendSupportedStructureSet.has(key));
+      if (filtered.length === current.length) {
+        return current;
+      }
+      const removed = current.filter((key) => !backendSupportedStructureSet.has(key));
+      appendLog(
+        `La instancia activa no soporta: ${removed.map((key) => structureLabel(key)).join(", ")}.`,
+      );
+      return filtered;
+    });
+  }, [backendSupportedStructureSet]);
 
   useEffect(() => {
     const input = fileInputRef.current;
@@ -725,6 +946,94 @@ export default function App() {
   }, [resultAssets]);
 
   useEffect(() => {
+    if (!isSubmitting || !backendStatus?.preview_ready || !backendStatus?.current_case_id) {
+      if (!isSubmitting) {
+        previewLoadKeyRef.current = "";
+        setLivePreviewCaseId("");
+        setLivePreviewOverlays([]);
+        setLivePreviewCursor(0);
+      }
+      return undefined;
+    }
+
+    const structureOrder = Array.isArray(backendStatus.preview_structures)
+      ? backendStatus.preview_structures.filter(Boolean)
+      : [];
+    if (!structureOrder.length) {
+      return undefined;
+    }
+
+    const caseId = backendStatus.current_case_id;
+    const previewKey = `${serverUrl}|${caseId}|${structureOrder.join("|")}`;
+    if (previewLoadKeyRef.current === previewKey) {
+      return undefined;
+    }
+
+    previewLoadKeyRef.current = previewKey;
+    let cancelled = false;
+
+    const loadPreviewMasks = async () => {
+      try {
+        const overlays = await Promise.all(
+          structureOrder.map(async (label) => {
+            const response = await fetch(
+              buildPreviewMaskUrl(serverUrl, caseId, label),
+              buildBackendFetchOptions(serverUrl),
+            );
+            if (!response.ok) {
+              throw new Error(`Preview no disponible para ${label}.`);
+            }
+            const bytes = new Uint8Array(await response.arrayBuffer());
+            return createMaskOverlay(label, bytes);
+          }),
+        );
+
+        if (!cancelled) {
+          setLivePreviewCaseId(caseId);
+          setLivePreviewOverlays(overlays);
+          setLivePreviewCursor(0);
+          appendLog(`Preview progresivo listo con ${overlays.length} estructura(s).`);
+        }
+      } catch {
+        if (!cancelled) {
+          previewLoadKeyRef.current = "";
+          setLivePreviewCaseId("");
+          setLivePreviewOverlays([]);
+        }
+      }
+    };
+
+    void loadPreviewMasks();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    isSubmitting,
+    backendStatus?.preview_ready,
+    backendStatus?.current_case_id,
+    serverUrl,
+    backendStatus?.preview_structures,
+  ]);
+
+  useEffect(() => {
+    if (!livePreviewAnimating) {
+      return undefined;
+    }
+
+    setLivePreviewCursor((current) => Math.min(current, livePreviewSteps.length - 1));
+    const intervalId = window.setInterval(() => {
+      setLivePreviewCursor((current) =>
+        current >= livePreviewSteps.length - 1 ? current : current + 1,
+      );
+    }, PREVIEW_DRAW_INTERVAL_MS);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [livePreviewAnimating, livePreviewSteps.length]);
+
+  useEffect(() => {
     if (!resultAssets?.masks?.length) {
       setMaskOverlays([]);
       return undefined;
@@ -734,15 +1043,7 @@ export default function App() {
       resultAssets.masks.map(async (asset) => {
         const response = await fetch(asset.url);
         const bytes = new Uint8Array(await response.arrayBuffer());
-        const volume = parseNiftiMaskVolume(bytes);
-        const color = STRUCTURE_COLORS[asset.label] ?? [255, 255, 0];
-        let nonZeroCount = 0;
-        for (const s of volume.slices) {
-          for (let i = 0; i < s.length; i++) { if (s[i]) nonZeroCount++; }
-        }
-        const [sx, sy, sz] = volume.spacing ?? [1, 1, 1];
-        const volumeMl = (nonZeroCount * sx * sy * sz) / 1000;
-        return { label: asset.label, color, nonZeroCount, volumeMl, ...volume };
+        return createMaskOverlay(asset.label, bytes);
       }),
     ).then((overlays) => {
       if (!cancelled) setMaskOverlays(overlays);
@@ -854,6 +1155,18 @@ export default function App() {
     });
   }
 
+  async function fetchBackendHealth() {
+    const response = await fetch(
+      buildBackendUrl(serverUrl, "/health"),
+      buildBackendFetchOptions(serverUrl),
+    );
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    const payload = await response.json();
+    return payload && typeof payload === "object" ? payload : { status: "ok" };
+  }
+
   useEffect(() => {
     if (!initialQueryServerUrlRef.current) {
       return;
@@ -888,18 +1201,25 @@ export default function App() {
     setConnectionState({ label: "Verificando...", tone: "neutral" });
     setConnectionDetail("");
     try {
-      const response = await fetch(
-        buildBackendUrl(serverUrl, "/health"),
-        buildBackendFetchOptions(serverUrl),
-      );
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
-      }
+      const payload = await fetchBackendHealth();
+      const supportedStructures = normalizeSupportedStructures(payload);
+      setBackendInfo(payload);
       setConnectionState({ label: "Conectado", tone: "success" });
       setConnectionDetail("");
       appendLog("Conexion con backend validada por /health.");
+      if (supportedStructures) {
+        const versionLabel = payload.app_version ? ` v${payload.app_version}` : "";
+        appendLog(
+          `Backend${versionLabel} anuncia ${supportedStructures.length} estructuras activas.`,
+        );
+      } else {
+        appendLog(
+          "El backend conectado no publica catalogo de estructuras. Puede estar desactualizado.",
+        );
+      }
     } catch (error) {
       const detail = explainConnectionError(error);
+      setBackendInfo(null);
       setConnectionState({ label: "Sin conexion", tone: "danger" });
       setConnectionDetail(detail);
       appendLog(`Error de conexion: ${detail}`);
@@ -966,6 +1286,10 @@ export default function App() {
   }
 
   function toggleStructure(key) {
+    if (!isStructureSelectable(key)) {
+      appendLog(`La estructura ${structureLabel(key)} no esta disponible en el backend activo.`);
+      return;
+    }
     setSelectedStructures((current) =>
       current.includes(key)
         ? current.filter((item) => item !== key)
@@ -974,13 +1298,17 @@ export default function App() {
   }
 
   function applyStructureSelection(keys, label) {
-    const readyKeys = keys.filter((key) =>
-      structureGroups.some((group) =>
-        group.items.some((item) => item.key === key && item.status === "ready"),
-      ),
+    const readyKeys = [...new Set(keys)].filter((key) => isStructureSelectable(key));
+    const excludedKeys = [...new Set(keys)].filter(
+      (key) => readyStructureKeys.has(key) && !readyKeys.includes(key),
     );
     setSelectedStructures(readyKeys);
     appendLog(`${label} aplicado con ${readyKeys.length} estructuras disponibles.`);
+    if (excludedKeys.length) {
+      appendLog(
+        `Omitidas por backend activo: ${excludedKeys.map((key) => structureLabel(key)).join(", ")}.`,
+      );
+    }
   }
 
   function saveCustomPreset() {
@@ -1031,6 +1359,38 @@ export default function App() {
     const caseId = generateCaseId();
     const requestedStructures = [...selectedStructures];
     const studySummary = compactStudySummary(studyMeta);
+
+    try {
+      const currentBackendInfo = backendInfo || await fetchBackendHealth();
+      const supportedStructures = normalizeSupportedStructures(currentBackendInfo);
+      setBackendInfo(currentBackendInfo);
+      setConnectionState({ label: "Conectado", tone: "success" });
+      setConnectionDetail("");
+
+      if (supportedStructures) {
+        const supportedStructureSet = new Set(supportedStructures);
+        const unsupportedKeys = requestedStructures.filter((key) => !supportedStructureSet.has(key));
+        if (unsupportedKeys.length) {
+          appendLog(
+            `El backend activo no soporta: ${unsupportedKeys.map((key) => structureLabel(key)).join(", ")}.`,
+          );
+          appendLog("Reinicia la instancia del backend con la version actual antes de reenviar.");
+          return;
+        }
+      } else {
+        appendLog(
+          "Backend sin catalogo publicado. Si rechaza ROI nuevas, reinicia la instancia con la version actual.",
+        );
+      }
+    } catch (error) {
+      const detail = explainConnectionError(error);
+      setBackendInfo(null);
+      setConnectionState({ label: "Sin conexion", tone: "danger" });
+      setConnectionDetail(detail);
+      appendLog(`Error de conexion: ${detail}`);
+      return;
+    }
+
     const payloadMap = {
       "config.json": new TextEncoder().encode(
         JSON.stringify(
@@ -1056,6 +1416,10 @@ export default function App() {
     setResultAssets(null);
     setSelectedVolumePath("");
     setVolumePreview(null);
+    previewLoadKeyRef.current = "";
+    setLivePreviewCaseId("");
+    setLivePreviewOverlays([]);
+    setLivePreviewCursor(0);
     appendLog(`Construyendo request ZIP para ${caseId}.`);
 
     for (const file of studyFiles) {
@@ -1144,6 +1508,11 @@ export default function App() {
       setPhase(cancelled ? "Cancelled" : "Failed");
       if (!cancelled) {
         appendLog(`Fallo en procesamiento: ${errorMessage}`);
+        if (errorMessage.includes("Estructura no soportada:")) {
+          appendLog(
+            "La instancia activa del backend no coincide con el catalogo del frontend. Reiniciala con el codigo actual.",
+          );
+        }
       }
     } finally {
       abortRef.current = null;
@@ -1154,6 +1523,10 @@ export default function App() {
   function cancelSubmission() {
     if (abortRef.current) {
       abortRef.current.abort();
+      previewLoadKeyRef.current = "";
+      setLivePreviewCaseId("");
+      setLivePreviewOverlays([]);
+      setLivePreviewCursor(0);
       appendLog("Solicitud cancelada por el usuario.");
       setIsSubmitting(false);
       setPhase("Cancelled");
@@ -1180,16 +1553,22 @@ export default function App() {
 
   const visibleOverlays = useMemo(
     () =>
-      maskOverlays
+      viewerOverlaySource
         .filter((ov) => !hiddenStructures.includes(ov.label))
         .map((ov) => ({
           ...ov,
           color: structureColorOverrides[ov.label] ?? ov.color,
         })),
-    [maskOverlays, hiddenStructures, structureColorOverrides],
+    [viewerOverlaySource, hiddenStructures, structureColorOverrides],
   );
 
-  const allHidden = maskOverlays.length > 0 && hiddenStructures.length === maskOverlays.length;
+  const allHidden =
+    viewerOverlaySource.length > 0 && hiddenStructures.length === viewerOverlaySource.length;
+  const livePreviewHeadline = activePreviewStep
+    ? `Dibujando ${structureLabel(activePreviewStep.label)} · slice ${activePreviewStep.sliceIndex + 1}/${activePreviewStep.sliceTotal}`
+    : livePreviewActive
+      ? "Preview progresivo disponible"
+      : "";
 
   const [openSections, setOpenSections] = useState({
     servidor: false,
@@ -1227,6 +1606,8 @@ export default function App() {
                   value={serverUrl}
                   onChange={(e) => {
                     setServerUrl(e.target.value);
+                    setBackendInfo(null);
+                    setConnectionState({ label: "Sin verificar", tone: "neutral" });
                     setConnectionDetail("");
                   }}
                   placeholder="https://xxxxx.ngrok-free.app"
@@ -1238,6 +1619,14 @@ export default function App() {
                   La URL queda guardada en este navegador. Tambien podes abrir la app con
                   <code>?backend=https://...</code>.
                 </p>
+                {backendInfo?.app_version && (
+                  <p className="field-help">
+                    Backend v{backendInfo.app_version}
+                    {backendSupportedStructureCount !== null
+                      ? ` · ${backendSupportedStructureCount} estructuras activas`
+                      : ""}
+                  </p>
+                )}
                 {connectionDetail && <div className="error-banner">{connectionDetail}</div>}
               </div>
             )}
@@ -1361,19 +1750,20 @@ export default function App() {
                         {group.items.map((item) => {
                           const checked = selectedStructures.includes(item.key);
                           const isReady = item.status === "ready";
+                          const isSelectable = isStructureSelectable(item.key);
                           return (
                             <label
-                              className={`structure-item ${checked ? "checked" : ""} ${!isReady ? "disabled" : ""}`}
+                              className={`structure-item ${checked ? "checked" : ""} ${!isSelectable ? "disabled" : ""}`}
                               key={item.key}
                             >
                               <input
                                 type="checkbox"
                                 checked={checked}
-                                disabled={!isReady}
+                                disabled={!isSelectable}
                                 onChange={() => toggleStructure(item.key)}
                               />
                               <span>{item.label}</span>
-                              <small>{isReady ? "MVP" : "Planned"}</small>
+                              <small>{structureAvailabilityText(item, backendSupportedStructureSet)}</small>
                             </label>
                           );
                         })}
@@ -1764,6 +2154,8 @@ export default function App() {
                     onWindowChange={(wc, ww) => setViewWindow({ wc, ww })}
                     onSliceChange={(index, total) => setSliceInfo({ index, total })}
                     overlays={visibleOverlays}
+                    forcedSliceIndex={viewerForcedSliceIndex}
+                    overlayProgress={overlayProgress}
                   />
                 ) : (
                   <img
@@ -1780,6 +2172,7 @@ export default function App() {
                     {" · "}{studyMeta.rows} × {studyMeta.columns}
                   </span>
                   <span>WC {viewWindow?.wc ?? studyMeta.previewWindowCenter ?? "N/D"} / WW {viewWindow?.ww ?? studyMeta.previewWindowWidth ?? "N/D"}</span>
+                  {livePreviewHeadline && <span>{livePreviewHeadline}</span>}
                 </figcaption>
               </figure>
             ) : (
@@ -1793,15 +2186,18 @@ export default function App() {
             )}
           </div>
 
-          {maskOverlays.length > 0 && (
+          {viewerOverlaySource.length > 0 && (
             <div className="structures-side-panel">
               <div className="struct-panel-header">
-                <span className="struct-panel-title">Estructuras</span>
+                <div className="struct-panel-heading">
+                  <span className="struct-panel-title">Estructuras</span>
+                  {livePreviewActive && <small className="struct-panel-subtitle">Preview en vivo</small>}
+                </div>
                 <button
                   className="pill-button"
                   onClick={() =>
                     setHiddenStructures(
-                      allHidden ? [] : maskOverlays.map((ov) => ov.label),
+                      allHidden ? [] : viewerOverlaySource.map((ov) => ov.label),
                     )
                   }
                 >
@@ -1810,14 +2206,31 @@ export default function App() {
               </div>
 
               <div className="struct-list">
-                {maskOverlays.map((ov) => {
+                {viewerOverlaySource.map((ov) => {
                   const isHidden = hiddenStructures.includes(ov.label);
                   const effectiveColor = structureColorOverrides[ov.label] ?? ov.color;
                   const hexColor = rgbToHex(effectiveColor);
                   const displayName = structureLabelMap[ov.label] || ov.label;
                   const volText = ov.volumeMl != null ? `${ov.volumeMl.toFixed(1)} ml` : null;
+                  const structureIndex = livePreviewStructureOrder.indexOf(ov.label);
+                  const isCurrent =
+                    !!activePreviewStep && activePreviewStep.label === ov.label;
+                  const isCompleted =
+                    !!activePreviewStep &&
+                    structureIndex >= 0 &&
+                    structureIndex < activePreviewStep.structureIndex;
+                  const previewStateLabel = livePreviewActive
+                    ? isCurrent
+                      ? `Slice ${activePreviewStep.sliceIndex + 1}`
+                      : isCompleted
+                        ? "Lista"
+                        : "En cola"
+                    : null;
                   return (
-                    <div key={ov.label} className={`struct-row${isHidden ? " struct-hidden" : ""}`}>
+                    <div
+                      key={ov.label}
+                      className={`struct-row${isHidden ? " struct-hidden" : ""}${isCurrent ? " struct-drawing" : ""}${isCompleted ? " struct-drawn" : ""}`}
+                    >
                       <label className="struct-color-wrap" title="Cambiar color">
                         <input
                           type="color"
@@ -1836,7 +2249,10 @@ export default function App() {
                       </label>
                       <div className="struct-info">
                         <span className="struct-name">{displayName}</span>
-                        {volText && <span className="struct-vol">{volText}</span>}
+                        <div className="struct-meta-line">
+                          {volText && <span className="struct-vol">{volText}</span>}
+                          {previewStateLabel && <span className="struct-state">{previewStateLabel}</span>}
+                        </div>
                       </div>
                       <button
                         className={`struct-toggle${isHidden ? " off" : ""}`}

@@ -508,6 +508,7 @@ button { cursor: pointer; }
 }
 .preview-caption {
   display: flex;
+  flex-wrap: wrap;
   justify-content: center;
   gap: 16px;
   font-size: 10px;
@@ -551,12 +552,23 @@ button { cursor: pointer; }
   gap: 6px;
 }
 
+.struct-panel-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
 .struct-panel-title {
   font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.1em;
   color: var(--text-2);
+}
+
+.struct-panel-subtitle {
+  font-size: 10px;
+  color: var(--accent);
 }
 
 .struct-list {
@@ -581,6 +593,13 @@ button { cursor: pointer; }
 }
 .struct-row:hover { border-color: var(--border-light); }
 .struct-row.struct-hidden { opacity: 0.4; }
+.struct-row.struct-drawing {
+  border-color: rgba(74, 143, 203, 0.6);
+  box-shadow: inset 0 0 0 1px rgba(74, 143, 203, 0.2);
+}
+.struct-row.struct-drawn {
+  border-color: rgba(76, 175, 103, 0.35);
+}
 
 .struct-color-wrap {
   position: relative;
@@ -624,6 +643,19 @@ button { cursor: pointer; }
   font-size: 10px;
   color: var(--text-3);
   font-family: "SF Mono", Menlo, Consolas, monospace;
+}
+
+.struct-meta-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.struct-state {
+  font-size: 10px;
+  color: var(--accent);
+  white-space: nowrap;
 }
 
 .struct-toggle {

@@ -9,10 +9,11 @@ from pathlib import Path
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.concurrency import run_in_threadpool
 from starlette.background import BackgroundTask
 
 from .config import settings
-from .constants import MODEL_LABELS, MODEL_MONAI_UNEST, MODEL_NNUNET_PELVIS, MODEL_TOTALSEGMENTATOR
+from .constants import MODEL_LABELS, MODEL_MONAI_UNEST, MODEL_NNUNET_PELVIS, MODEL_TOTALSEGMENTATOR, STRUCTURES
 from .pipeline import PipelineError, process_archive
 from .status import StatusTracker
 from .totalseg import is_totalsegmentator_available
@@ -25,6 +26,14 @@ app = FastAPI(
 )
 status_tracker = StatusTracker()
 logger = logging.getLogger("aura_rt.backend.http")
+
+ACTIVE_STRUCTURE_KEYS = tuple(
+    sorted(
+        key
+        for key, definition in STRUCTURES.items()
+        if definition.model == MODEL_TOTALSEGMENTATOR and definition.roi_names
+    )
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -66,13 +75,38 @@ def on_startup() -> None:
 
 
 @app.get("/health")
-def healthcheck() -> dict[str, str]:
-    return {"status": "ok"}
+def healthcheck() -> dict[str, object]:
+    return {
+        "status": "ok",
+        "app_version": settings.app_version,
+        "supported_structures": list(ACTIVE_STRUCTURE_KEYS),
+        "supported_structure_count": len(ACTIVE_STRUCTURE_KEYS),
+    }
 
 
 @app.get("/status")
 def status() -> dict[str, object]:
     return status_tracker.snapshot().model_dump()
+
+
+@app.get("/preview/{case_id}")
+def preview_manifest(case_id: str) -> dict[str, object]:
+    manifest = status_tracker.preview_manifest(case_id)
+    if manifest is None:
+        raise HTTPException(status_code=404, detail="Preview no disponible para este caso.")
+    return manifest
+
+
+@app.get("/preview/{case_id}/mask/{structure_name}")
+def preview_mask(case_id: str, structure_name: str) -> FileResponse:
+    mask_path = status_tracker.preview_mask_path(case_id, structure_name)
+    if mask_path is None or not mask_path.exists():
+        raise HTTPException(status_code=404, detail="Mascara preview no disponible.")
+    return FileResponse(
+        path=mask_path,
+        media_type="application/gzip",
+        filename=mask_path.name,
+    )
 
 
 @app.post("/segment")
@@ -101,7 +135,8 @@ async def segment(file: UploadFile = File(...)) -> FileResponse:
             file.filename,
             len(request_bytes),
         )
-        process_archive(
+        await run_in_threadpool(
+            process_archive,
             archive_path=request_zip_path,
             output_zip_path=response_zip_path,
             status_tracker=status_tracker,
