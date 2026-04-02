@@ -152,6 +152,24 @@ function buildPreviewCanvas(width, height, sliceOffset, sliceVoxelCount, reader)
   return canvas;
 }
 
+export function parseNiftiMaskVolume(sourceBytes) {
+  const header = parseNiftiHeader(sourceBytes);
+  const reader = createVoxelReader(header);
+  const sliceVoxelCount = header.width * header.height;
+  const slices = [];
+
+  for (let z = 0; z < header.depth; z++) {
+    const mask = new Uint8Array(sliceVoxelCount);
+    const sliceOffset = z * sliceVoxelCount;
+    for (let i = 0; i < sliceVoxelCount; i++) {
+      mask[i] = reader.isActive(sliceOffset + i) ? 1 : 0;
+    }
+    slices.push(mask);
+  }
+
+  return { slices, width: header.width, height: header.height, depth: header.depth };
+}
+
 export function buildNiftiMaskPreview(sourceBytes) {
   const header = parseNiftiHeader(sourceBytes);
   const reader = createVoxelReader(header);

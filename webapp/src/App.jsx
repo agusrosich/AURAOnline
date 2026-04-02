@@ -1,7 +1,7 @@
 import { startTransition, useCallback, useEffect, useRef, useState } from "react";
 import { strFromU8, unzipSync, zipSync } from "fflate";
 import { inspectDicomFiles, loadAllDicomSlices } from "./dicom";
-import { buildNiftiMaskPreview } from "./nifti";
+import { buildNiftiMaskPreview, parseNiftiMaskVolume } from "./nifti";
 import { presets, referenceDsc, structureGroups } from "./catalog";
 
 const STORAGE_KEYS = {
@@ -17,6 +17,22 @@ const DEFAULT_SERVER_URL =
 const POLL_INTERVAL_MS = Number(import.meta.env.VITE_AURA_RT_POLL_INTERVAL_MS || 5000);
 const CASE_HISTORY_LIMIT = 8;
 const CUSTOM_PRESET_LIMIT = 8;
+
+const STRUCTURE_COLORS = {
+  Liver:            [0,   102, 204],
+  Spleen:           [0,   153, 255],
+  Kidney_R:         [51,  153, 255],
+  Kidney_L:         [102, 178, 255],
+  Pancreas:         [0,   128, 255],
+  Gallbladder:      [0,   204, 204],
+  Aorta:            [255, 64,  64],
+  Stomach:          [255, 153, 51],
+  Bowel:            [255, 204, 0],
+  Brain:            [204, 102, 255],
+  Prostate:         [255, 153, 153],
+  PenileBulb:       [255, 102, 102],
+  PelvicLymphNodes: [255, 204, 153],
+};
 const NGROK_SKIP_WARNING_HEADERS = {
   "ngrok-skip-browser-warning": "1",
 };
@@ -552,6 +568,7 @@ export default function App() {
   const [resultAssets, setResultAssets] = useState(null);
   const [selectedVolumePath, setSelectedVolumePath] = useState("");
   const [volumePreview, setVolumePreview] = useState(null);
+  const [maskOverlays, setMaskOverlays] = useState([]);
   const [lastStatusMessage, setLastStatusMessage] = useState("");
   const [caseHistory, setCaseHistory] = useState(() => {
     const storedValue = loadStoredJson(STORAGE_KEYS.caseHistory, []);
@@ -605,6 +622,28 @@ export default function App() {
         URL.revokeObjectURL(asset.url);
       }
     };
+  }, [resultAssets]);
+
+  useEffect(() => {
+    if (!resultAssets?.masks?.length) {
+      setMaskOverlays([]);
+      return undefined;
+    }
+    let cancelled = false;
+    Promise.all(
+      resultAssets.masks.map(async (asset) => {
+        const response = await fetch(asset.url);
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        const volume = parseNiftiMaskVolume(bytes);
+        const color = STRUCTURE_COLORS[asset.label] ?? [255, 255, 0];
+        return { label: asset.label, color, ...volume };
+      }),
+    ).then((overlays) => {
+      if (!cancelled) setMaskOverlays(overlays);
+    }).catch(() => {
+      if (!cancelled) setMaskOverlays([]);
+    });
+    return () => { cancelled = true; };
   }, [resultAssets]);
 
   useEffect(() => {
