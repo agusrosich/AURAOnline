@@ -4,8 +4,23 @@ from dataclasses import dataclass
 
 
 MODEL_TOTALSEGMENTATOR = "totalsegmentator"
+MODEL_TOTALSEG_HEAD_GLANDS = "totalseg_head_glands_cavities"
+MODEL_TOTALSEG_HEAD_MUSCLES = "totalseg_head_muscles"
+MODEL_TOTALSEG_HEADNECK_BONES = "totalseg_headneck_bones_vessels"
+MODEL_TOTALSEG_HEADNECK_MUSCLES = "totalseg_headneck_muscles"
+MODEL_TOTALSEG_BRAIN = "totalseg_brain_structures"
 MODEL_MONAI_UNEST = "monai_unest"
 MODEL_NNUNET_PELVIS = "nnunet_pelvis"
+
+# Mapeo de constante de modelo -> task_name de TotalSegmentator
+TOTALSEG_TASK_MAP: dict[str, str] = {
+    MODEL_TOTALSEGMENTATOR:        "total",
+    MODEL_TOTALSEG_HEAD_GLANDS:    "head_glands_cavities",
+    MODEL_TOTALSEG_HEAD_MUSCLES:   "head_muscles",
+    MODEL_TOTALSEG_HEADNECK_BONES: "headneck_bones_vessels",
+    MODEL_TOTALSEG_HEADNECK_MUSCLES: "headneck_muscles",
+    MODEL_TOTALSEG_BRAIN:          "brain_structures",
+}
 
 
 @dataclass(frozen=True)
@@ -258,13 +273,212 @@ STRUCTURES: dict[str, StructureDefinition] = {
         roi_names=(),
         color=(255, 204, 153),
     ),
+    # ── Médula espinal (total task) ──────────────────────────────────────
+    "spinal_cord": StructureDefinition(
+        request_key="spinal_cord",
+        display_name="Medula espinal",
+        clinical_name="SpinalCord",
+        model=MODEL_TOTALSEGMENTATOR,
+        roi_names=("spinal_cord",),
+        color=(255, 255, 153),
+    ),
+    # ── H&N: glándulas y cavidades (subtask head_glands_cavities) ────────
+    "parotid_right": StructureDefinition(
+        request_key="parotid_right",
+        display_name="Parotida derecha",
+        clinical_name="Parotid_R",
+        model=MODEL_TOTALSEG_HEAD_GLANDS,
+        roi_names=("parotid_gland_right",),
+        color=(255, 178, 102),
+    ),
+    "parotid_left": StructureDefinition(
+        request_key="parotid_left",
+        display_name="Parotida izquierda",
+        clinical_name="Parotid_L",
+        model=MODEL_TOTALSEG_HEAD_GLANDS,
+        roi_names=("parotid_gland_left",),
+        color=(255, 204, 128),
+    ),
+    "submandibular_right": StructureDefinition(
+        request_key="submandibular_right",
+        display_name="Submaxilar derecha",
+        clinical_name="Submandibular_R",
+        model=MODEL_TOTALSEG_HEAD_GLANDS,
+        roi_names=("submandibular_gland_right",),
+        color=(255, 153, 51),
+    ),
+    "submandibular_left": StructureDefinition(
+        request_key="submandibular_left",
+        display_name="Submaxilar izquierda",
+        clinical_name="Submandibular_L",
+        model=MODEL_TOTALSEG_HEAD_GLANDS,
+        roi_names=("submandibular_gland_left",),
+        color=(255, 178, 77),
+    ),
+    "eye_right": StructureDefinition(
+        request_key="eye_right",
+        display_name="Ojo derecho",
+        clinical_name="Eye_R",
+        model=MODEL_TOTALSEG_HEAD_GLANDS,
+        roi_names=("eye_right",),
+        color=(153, 255, 153),
+    ),
+    "eye_left": StructureDefinition(
+        request_key="eye_left",
+        display_name="Ojo izquierdo",
+        clinical_name="Eye_L",
+        model=MODEL_TOTALSEG_HEAD_GLANDS,
+        roi_names=("eye_left",),
+        color=(102, 255, 102),
+    ),
+    "lens_right": StructureDefinition(
+        request_key="lens_right",
+        display_name="Cristalino derecho",
+        clinical_name="Lens_R",
+        model=MODEL_TOTALSEG_HEAD_GLANDS,
+        roi_names=("eye_lens_right",),
+        color=(204, 255, 204),
+    ),
+    "lens_left": StructureDefinition(
+        request_key="lens_left",
+        display_name="Cristalino izquierdo",
+        clinical_name="Lens_L",
+        model=MODEL_TOTALSEG_HEAD_GLANDS,
+        roi_names=("eye_lens_left",),
+        color=(178, 255, 178),
+    ),
+    "optic_nerve_right": StructureDefinition(
+        request_key="optic_nerve_right",
+        display_name="Nervio optico derecho",
+        clinical_name="OpticNerve_R",
+        model=MODEL_TOTALSEG_HEAD_GLANDS,
+        roi_names=("optic_nerve_right",),
+        color=(255, 255, 102),
+    ),
+    "optic_nerve_left": StructureDefinition(
+        request_key="optic_nerve_left",
+        display_name="Nervio optico izquierdo",
+        clinical_name="OpticNerve_L",
+        model=MODEL_TOTALSEG_HEAD_GLANDS,
+        roi_names=("optic_nerve_left",),
+        color=(255, 255, 51),
+    ),
+    "nasopharynx": StructureDefinition(
+        request_key="nasopharynx",
+        display_name="Nasofaringe",
+        clinical_name="Nasopharynx",
+        model=MODEL_TOTALSEG_HEAD_GLANDS,
+        roi_names=("nasopharynx",),
+        color=(204, 153, 255),
+    ),
+    "oropharynx": StructureDefinition(
+        request_key="oropharynx",
+        display_name="Orofaringe",
+        clinical_name="Oropharynx",
+        model=MODEL_TOTALSEG_HEAD_GLANDS,
+        roi_names=("oropharynx",),
+        color=(178, 102, 255),
+    ),
+    "hypopharynx": StructureDefinition(
+        request_key="hypopharynx",
+        display_name="Hipofaringe",
+        clinical_name="Hypopharynx",
+        model=MODEL_TOTALSEG_HEAD_GLANDS,
+        roi_names=("hypopharynx",),
+        color=(153, 51, 255),
+    ),
+    # ── H&N: músculos de cabeza (subtask head_muscles) ───────────────────
+    "masseter_right": StructureDefinition(
+        request_key="masseter_right",
+        display_name="Massetero derecho",
+        clinical_name="Masseter_R",
+        model=MODEL_TOTALSEG_HEAD_MUSCLES,
+        roi_names=("masseter_right",),
+        color=(255, 102, 178),
+    ),
+    "masseter_left": StructureDefinition(
+        request_key="masseter_left",
+        display_name="Massetero izquierdo",
+        clinical_name="Masseter_L",
+        model=MODEL_TOTALSEG_HEAD_MUSCLES,
+        roi_names=("masseter_left",),
+        color=(255, 51, 153),
+    ),
+    "tongue": StructureDefinition(
+        request_key="tongue",
+        display_name="Lengua",
+        clinical_name="Tongue",
+        model=MODEL_TOTALSEG_HEAD_MUSCLES,
+        roi_names=("tongue",),
+        color=(255, 102, 102),
+    ),
+    # ── H&N: huesos y vasos (subtask headneck_bones_vessels) ─────────────
+    "larynx": StructureDefinition(
+        request_key="larynx",
+        display_name="Laringe",
+        clinical_name="Larynx",
+        model=MODEL_TOTALSEG_HEADNECK_BONES,
+        roi_names=("larynx_air",),
+        color=(153, 204, 255),
+    ),
+    "thyroid_cartilage": StructureDefinition(
+        request_key="thyroid_cartilage",
+        display_name="Cartilago tiroides",
+        clinical_name="ThyroidCartilage",
+        model=MODEL_TOTALSEG_HEADNECK_BONES,
+        roi_names=("thyroid_cartilage",),
+        color=(178, 216, 255),
+    ),
+    # ── H&N: músculos de cuello (subtask headneck_muscles) ───────────────
+    "sternocleidomastoid_right": StructureDefinition(
+        request_key="sternocleidomastoid_right",
+        display_name="Esternocleidomastoideo D",
+        clinical_name="SCM_R",
+        model=MODEL_TOTALSEG_HEADNECK_MUSCLES,
+        roi_names=("sternocleidomastoid_right",),
+        color=(204, 255, 229),
+    ),
+    "sternocleidomastoid_left": StructureDefinition(
+        request_key="sternocleidomastoid_left",
+        display_name="Esternocleidomastoideo I",
+        clinical_name="SCM_L",
+        model=MODEL_TOTALSEG_HEADNECK_MUSCLES,
+        roi_names=("sternocleidomastoid_left",),
+        color=(153, 255, 204),
+    ),
+    "pharyngeal_constrictor": StructureDefinition(
+        request_key="pharyngeal_constrictor",
+        display_name="Constrictores faringeos",
+        clinical_name="PharyngealConstrictor",
+        model=MODEL_TOTALSEG_HEADNECK_MUSCLES,
+        roi_names=(
+            "superior_pharyngeal_constrictor",
+            "middle_pharyngeal_constrictor",
+            "inferior_pharyngeal_constrictor",
+        ),
+        color=(102, 255, 178),
+    ),
+    # ── Tronco cerebral (subtask brain_structures) ───────────────────────
+    "brainstem": StructureDefinition(
+        request_key="brainstem",
+        display_name="Tronco cerebral",
+        clinical_name="Brainstem",
+        model=MODEL_TOTALSEG_BRAIN,
+        roi_names=("brainstem",),
+        color=(178, 102, 204),
+    ),
 }
 
 
 MODEL_LABELS = {
-    MODEL_TOTALSEGMENTATOR: "TotalSegmentator V2",
-    MODEL_MONAI_UNEST: "MONAI UNesT",
-    MODEL_NNUNET_PELVIS: "nnU-Net Pelvis",
+    MODEL_TOTALSEGMENTATOR:          "TotalSegmentator V2",
+    MODEL_TOTALSEG_HEAD_GLANDS:      "TotalSegmentator V2 (Head Glands)",
+    MODEL_TOTALSEG_HEAD_MUSCLES:     "TotalSegmentator V2 (Head Muscles)",
+    MODEL_TOTALSEG_HEADNECK_BONES:   "TotalSegmentator V2 (HeadNeck Bones)",
+    MODEL_TOTALSEG_HEADNECK_MUSCLES: "TotalSegmentator V2 (HeadNeck Muscles)",
+    MODEL_TOTALSEG_BRAIN:            "TotalSegmentator V2 (Brain)",
+    MODEL_MONAI_UNEST:               "MONAI UNesT",
+    MODEL_NNUNET_PELVIS:             "nnU-Net Pelvis",
 }
 
 

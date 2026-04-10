@@ -15,7 +15,7 @@ import pydicom
 import SimpleITK as sitk
 from pydicom.uid import ExplicitVRBigEndian, ExplicitVRLittleEndian, ImplicitVRLittleEndian
 
-from .constants import MODEL_LABELS, MODEL_MONAI_UNEST, MODEL_NNUNET_PELVIS, MODEL_TOTALSEGMENTATOR, STRUCTURES, StructureDefinition
+from .constants import MODEL_LABELS, MODEL_MONAI_UNEST, MODEL_NNUNET_PELVIS, MODEL_TOTALSEGMENTATOR, TOTALSEG_TASK_MAP, STRUCTURES, StructureDefinition
 from .rtstruct_builder import build_rtstruct
 from .schemas import SegmentConfig, SegmentReport
 from .status import StatusTracker
@@ -726,6 +726,67 @@ def process_archive(
                 "Mascaras generadas case_id=%s structures=%s",
                 config.anonymized_id,
                 list(generated_masks.keys()),
+            )
+
+        # ── Subtasks de TotalSegmentator (H&N, brain, etc.) ──────────────
+        totalseg_subtask_models = [
+            model_key for model_key in grouped_structures
+            if model_key in TOTALSEG_TASK_MAP and model_key != MODEL_TOTALSEGMENTATOR
+        ]
+        for model_key in totalseg_subtask_models:
+            subtask_definitions = grouped_structures[model_key]
+            task_name = TOTALSEG_TASK_MAP[model_key]
+            model_label = MODEL_LABELS[model_key]
+            roi_subset = [roi_name for d in subtask_definitions for roi_name in d.roi_names]
+            logger.info(
+                "Ejecutando TotalSegmentator subtask=%s case_id=%s roi_subset=%s",
+                task_name,
+                config.anonymized_id,
+                roi_subset,
+            )
+            status_tracker.update(
+                message=f"Ejecutando TotalSegmentator ({task_name})",
+                active_model=model_label,
+                phase="segmenting",
+                progress_percent=50,
+            )
+            subtask_output_dir = temp_dir / f"totalseg_{task_name}"
+            try:
+                run_totalsegmentator(
+                    input_nifti=input_nifti,
+                    output_dir=subtask_output_dir,
+                    roi_names=roi_subset,
+                    fast_mode=config.fast_mode,
+                    task_name=task_name,
+                )
+            except TotalSegmentatorError as exc:
+                raise PipelineError(
+                    str(exc),
+                    status_code=500,
+                    code="segmentation_engine_error",
+                    hint=f"Revisa disponibilidad de TotalSegmentator subtask={task_name} y logs del backend.",
+                ) from exc
+
+            generated_masks.update(
+                _materialize_masks(
+                    definitions=subtask_definitions,
+                    generated_mask_dir=subtask_output_dir,
+                    destination_dir=temp_dir / "prepared_masks",
+                )
+            )
+            if model_label not in models_used:
+                models_used.append(model_label)
+            status_tracker.update(
+                message=f"Mascaras generadas por {task_name}",
+                generated_structures=list(generated_masks.keys()),
+                phase="postprocessing",
+                progress_percent=75,
+            )
+            logger.info(
+                "Subtask completado task=%s case_id=%s structures=%s",
+                task_name,
+                config.anonymized_id,
+                [d.clinical_name for d in subtask_definitions],
             )
 
         if not generated_masks:
