@@ -14,7 +14,9 @@ from starlette.background import BackgroundTask
 
 from .config import settings
 from .constants import MODEL_LABELS, MODEL_MONAI_UNEST, MODEL_NNUNET_PELVIS, MODEL_TOTALSEGMENTATOR, STRUCTURES
+from .dicom_sender import DicomDestination, DicomSenderError, verify_connection
 from .pipeline import PipelineError, process_archive
+from .schemas import DicomDestinationConfig
 from .status import StatusTracker
 from .totalseg import is_totalsegmentator_available
 
@@ -107,6 +109,53 @@ def preview_mask(case_id: str, structure_name: str) -> FileResponse:
         media_type="application/gzip",
         filename=mask_path.name,
     )
+
+
+@app.post("/dicom/verify")
+def dicom_verify(config: DicomDestinationConfig) -> dict[str, object]:
+    """Verifica conectividad con un nodo DICOM SCP via C-ECHO.
+
+    Útil para que la webapp confirme que el destino es alcanzable
+    antes de iniciar una segmentación larga.
+
+    Body (JSON):
+        ae_title: AE Title del SCP destino.
+        host: IP o hostname del SCP.
+        port: Puerto DICOM (default 104).
+        source_ae_title: AE Title de AURA (default "AURA_RT").
+
+    Returns:
+        {"reachable": true/false, "ae_title": "...", "host": "...", "port": N}
+    """
+    try:
+        destination = DicomDestination(
+            ae_title=config.ae_title,
+            host=config.host,
+            port=config.port,
+            source_ae_title=config.source_ae_title,
+            tls=config.tls,
+            timeout_seconds=min(config.timeout_seconds, 15),
+        )
+        reachable = verify_connection(destination)
+    except DicomSenderError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "dicom_verify_error",
+                "message": str(exc),
+                "hint": "Verificá que pynetdicom esté instalado en el backend.",
+            },
+        ) from exc
+    except Exception as exc:
+        logger.warning("DICOM verify error host=%s port=%s: %s", config.host, config.port, exc)
+        reachable = False
+
+    return {
+        "reachable": reachable,
+        "ae_title": config.ae_title,
+        "host": config.host,
+        "port": config.port,
+    }
 
 
 @app.post("/segment")

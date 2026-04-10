@@ -16,6 +16,7 @@ import SimpleITK as sitk
 from pydicom.uid import ExplicitVRBigEndian, ExplicitVRLittleEndian, ImplicitVRLittleEndian
 
 from .constants import MODEL_LABELS, MODEL_MONAI_UNEST, MODEL_NNUNET_PELVIS, MODEL_TOTALSEGMENTATOR, TOTALSEG_TASK_MAP, STRUCTURES, StructureDefinition
+from .dicom_sender import DicomDestination, DicomSenderError, send_case_to_dicom
 from .rtstruct_builder import build_rtstruct
 from .schemas import SegmentConfig, SegmentReport
 from .status import StatusTracker
@@ -843,6 +844,79 @@ def process_archive(
             report=report,
             output_zip_path=output_zip_path,
         )
+
+        # ── C-STORE opcional al TPS ───────────────────────────────────
+        if config.dicom_destination is not None:
+            dest_cfg = config.dicom_destination
+            status_tracker.update(
+                message=f"Enviando via DICOM C-STORE a {dest_cfg.ae_title}@{dest_cfg.host}:{dest_cfg.port}",
+                active_model=None,
+                phase="dicom_send",
+                progress_percent=97,
+            )
+            logger.info(
+                "Iniciando C-STORE case_id=%s destination=%s@%s:%s",
+                config.anonymized_id,
+                dest_cfg.ae_title,
+                dest_cfg.host,
+                dest_cfg.port,
+            )
+            try:
+                destination = DicomDestination(
+                    ae_title=dest_cfg.ae_title,
+                    host=dest_cfg.host,
+                    port=dest_cfg.port,
+                    source_ae_title=dest_cfg.source_ae_title,
+                    tls=dest_cfg.tls,
+                    timeout_seconds=dest_cfg.timeout_seconds,
+                )
+                send_result = send_case_to_dicom(
+                    ct_dir=dicom_series_dir,
+                    rtstruct_path=rtstruct_path,
+                    destination=destination,
+                )
+                report = SegmentReport(
+                    case_id=report.case_id,
+                    generated_structures=report.generated_structures,
+                    models_used=report.models_used,
+                    processing_seconds=report.processing_seconds,
+                    warnings=report.warnings,
+                    dicom_send_summary=send_result.summary,
+                )
+                if not send_result.success:
+                    logger.warning(
+                        "C-STORE completado con errores case_id=%s errors=%s",
+                        config.anonymized_id,
+                        send_result.errors,
+                    )
+                else:
+                    logger.info(
+                        "C-STORE exitoso case_id=%s ct_sent=%s rtstruct=%s duration=%ss",
+                        config.anonymized_id,
+                        send_result.ct_sent,
+                        send_result.rtstruct_sent,
+                        send_result.duration_seconds,
+                    )
+            except DicomSenderError as exc:
+                logger.error("C-STORE fallido case_id=%s: %s", config.anonymized_id, exc)
+                report = SegmentReport(
+                    case_id=report.case_id,
+                    generated_structures=report.generated_structures,
+                    models_used=report.models_used,
+                    processing_seconds=report.processing_seconds,
+                    warnings=report.warnings + [f"C-STORE fallido: {exc}"],
+                    dicom_send_summary=f"Error: {exc}",
+                )
+            except Exception as exc:
+                logger.exception("C-STORE error inesperado case_id=%s", config.anonymized_id)
+                report = SegmentReport(
+                    case_id=report.case_id,
+                    generated_structures=report.generated_structures,
+                    models_used=report.models_used,
+                    processing_seconds=report.processing_seconds,
+                    warnings=report.warnings + [f"C-STORE error inesperado: {exc}"],
+                    dicom_send_summary=f"Error inesperado: {exc}",
+                )
         logger.info(
             "Caso completado case_id=%s generated_structures=%s processing_seconds=%s",
             config.anonymized_id,

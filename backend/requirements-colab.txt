@@ -5,6 +5,7 @@ pydantic>=2.7
 numpy>=1.26
 SimpleITK>=2.3
 pydicom>=2.4
+pynetdicom>=2.0
 requests>=2.32
 rt-utils>=1.2.7
 TotalSegmentator>=2.7

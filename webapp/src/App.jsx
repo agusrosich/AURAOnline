@@ -9,6 +9,7 @@ const STORAGE_KEYS = {
   selectedStructures: "aura_rt_selected_structures",
   customPresets: "aura_rt_custom_presets",
   caseHistory: "aura_rt_case_history",
+  dicomDestination: "aura_rt_dicom_destination",
 };
 
 const SERVER_URL_QUERY_KEYS = ["backend", "server", "serverUrl"];
@@ -465,6 +466,7 @@ function buildCaseSnapshot({
     models_used: report?.models_used || [],
     processing_seconds: report?.processing_seconds || 0,
     warnings: report?.warnings || [],
+    dicom_send_summary: report?.dicom_send_summary || null,
     completed_at: new Date().toISOString(),
     server_url: serverUrl,
     study: studySummary,
@@ -787,6 +789,29 @@ export default function App() {
   const [connectionDetail, setConnectionDetail] = useState("");
   const [backendInfo, setBackendInfo] = useState(null);
   const [backendStatus, setBackendStatus] = useState(null);
+
+  // ── DICOM destination state ─────────────────────────────────────────
+  const [dicomEnabled, setDicomEnabled] = useState(() => {
+    const stored = loadStoredJson(STORAGE_KEYS.dicomDestination, null);
+    return stored?.enabled ?? false;
+  });
+  const [dicomAeTitle, setDicomAeTitle] = useState(() => {
+    const stored = loadStoredJson(STORAGE_KEYS.dicomDestination, null);
+    return stored?.ae_title ?? "";
+  });
+  const [dicomHost, setDicomHost] = useState(() => {
+    const stored = loadStoredJson(STORAGE_KEYS.dicomDestination, null);
+    return stored?.host ?? "";
+  });
+  const [dicomPort, setDicomPort] = useState(() => {
+    const stored = loadStoredJson(STORAGE_KEYS.dicomDestination, null);
+    return stored?.port ?? 104;
+  });
+  const [dicomSourceAe, setDicomSourceAe] = useState(() => {
+    const stored = loadStoredJson(STORAGE_KEYS.dicomDestination, null);
+    return stored?.source_ae_title ?? "AURA_RT";
+  });
+  const [dicomVerifyState, setDicomVerifyState] = useState({ label: "", tone: "neutral" });
   const [studyFiles, setStudyFiles] = useState([]);
   const [studyMeta, setStudyMeta] = useState(null);
   const [viewWindow, setViewWindow] = useState(null);
@@ -894,6 +919,19 @@ export default function App() {
   useEffect(() => {
     window.localStorage.setItem(STORAGE_KEYS.caseHistory, JSON.stringify(caseHistory));
   }, [caseHistory]);
+
+  useEffect(() => {
+    window.localStorage.setItem(
+      STORAGE_KEYS.dicomDestination,
+      JSON.stringify({
+        enabled: dicomEnabled,
+        ae_title: dicomAeTitle,
+        host: dicomHost,
+        port: dicomPort,
+        source_ae_title: dicomSourceAe,
+      }),
+    );
+  }, [dicomEnabled, dicomAeTitle, dicomHost, dicomPort, dicomSourceAe]);
 
   useEffect(() => {
     if (!backendSupportedStructureSet) {
@@ -1155,6 +1193,42 @@ export default function App() {
     });
   }
 
+  async function verifyDicom() {
+    if (!dicomAeTitle.trim() || !dicomHost.trim()) {
+      setDicomVerifyState({ label: "AE Title y host son requeridos", tone: "danger" });
+      return;
+    }
+    setDicomVerifyState({ label: "Verificando...", tone: "neutral" });
+    try {
+      const response = await fetch(
+        buildBackendUrl(serverUrl, "/dicom/verify"),
+        buildBackendFetchOptions(serverUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ae_title: dicomAeTitle.trim(),
+            host: dicomHost.trim(),
+            port: Number(dicomPort),
+            source_ae_title: dicomSourceAe.trim() || "AURA_RT",
+          }),
+        }),
+      );
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        setDicomVerifyState({ label: err?.detail?.message || `Error ${response.status}`, tone: "danger" });
+        return;
+      }
+      const data = await response.json();
+      if (data.reachable) {
+        setDicomVerifyState({ label: `✓ Alcanzable — ${data.ae_title}@${data.host}:${data.port}`, tone: "success" });
+      } else {
+        setDicomVerifyState({ label: `✗ Sin respuesta C-ECHO — ${data.ae_title}@${data.host}:${data.port}`, tone: "danger" });
+      }
+    } catch (err) {
+      setDicomVerifyState({ label: `Error de conexión: ${err.message}`, tone: "danger" });
+    }
+  }
+
   async function fetchBackendHealth() {
     const response = await fetch(
       buildBackendUrl(serverUrl, "/health"),
@@ -1391,6 +1465,15 @@ export default function App() {
       return;
     }
 
+    const dicomDestination = dicomEnabled && dicomAeTitle.trim() && dicomHost.trim()
+      ? {
+          ae_title: dicomAeTitle.trim(),
+          host: dicomHost.trim(),
+          port: Number(dicomPort),
+          source_ae_title: dicomSourceAe.trim() || "AURA_RT",
+        }
+      : null;
+
     const payloadMap = {
       "config.json": new TextEncoder().encode(
         JSON.stringify(
@@ -1399,6 +1482,7 @@ export default function App() {
             modality: "CT",
             fast_mode: true,
             anonymized_id: caseId,
+            ...(dicomDestination ? { dicom_destination: dicomDestination } : {}),
           },
           null,
           2,
@@ -1572,6 +1656,7 @@ export default function App() {
 
   const [openSections, setOpenSections] = useState({
     servidor: false,
+    dicom: false,
     estudio: true,
     estructuras: true,
     procesamiento: true,
@@ -1628,6 +1713,135 @@ export default function App() {
                   </p>
                 )}
                 {connectionDetail && <div className="error-banner">{connectionDetail}</div>}
+              </div>
+            )}
+          </div>
+
+          {/* Destino DICOM (C-STORE) */}
+          <div className="accordion-item">
+            <button className="accordion-trigger" onClick={() => toggleSection("dicom")}>
+              <span className="accordion-arrow">{openSections.dicom ? "▾" : "▸"}</span>
+              Destino DICOM
+              {dicomEnabled && dicomAeTitle && dicomHost && (
+                <span className="accordion-badge" style={{ backgroundColor: "#22c55e" }}>
+                  {dicomAeTitle}@{dicomHost}:{dicomPort}
+                </span>
+              )}
+            </button>
+            {openSections.dicom && (
+              <div className="accordion-body" style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+                <p style={{ fontSize: "13px", color: "var(--text-secondary)", margin: 0 }}>
+                  Configura un nodo DICOM SCP (Eclipse/ARIA, Monaco) para recibir
+                  automáticamente la TC y el RT-STRUCT al finalizar la segmentación.
+                  El backend enviará los archivos via C-STORE sin intervención manual.
+                </p>
+
+                {/* Toggle habilitar */}
+                <label style={{ display: "flex", alignItems: "center", gap: "10px", cursor: "pointer", fontSize: "14px" }}>
+                  <input
+                    type="checkbox"
+                    checked={dicomEnabled}
+                    onChange={(e) => setDicomEnabled(e.target.checked)}
+                    style={{ width: "18px", height: "18px" }}
+                  />
+                  <span>Enviar automáticamente al TPS al finalizar</span>
+                </label>
+
+                {/* Campos de configuración */}
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                    <label style={{ fontSize: "12px", color: "var(--text-secondary)", fontWeight: 600 }}>
+                      AE Title destino *
+                    </label>
+                    <input
+                      type="text"
+                      value={dicomAeTitle}
+                      onChange={(e) => { setDicomAeTitle(e.target.value.toUpperCase()); setDicomVerifyState({ label: "", tone: "neutral" }); }}
+                      placeholder="ARIA_SCP"
+                      maxLength={16}
+                      style={{ padding: "8px 10px", borderRadius: "6px", border: "1px solid var(--border)", background: "var(--surface-2)", color: "var(--text-primary)", fontSize: "13px", fontFamily: "monospace" }}
+                    />
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                    <label style={{ fontSize: "12px", color: "var(--text-secondary)", fontWeight: 600 }}>
+                      Host / IP *
+                    </label>
+                    <input
+                      type="text"
+                      value={dicomHost}
+                      onChange={(e) => { setDicomHost(e.target.value); setDicomVerifyState({ label: "", tone: "neutral" }); }}
+                      placeholder="192.168.1.100"
+                      style={{ padding: "8px 10px", borderRadius: "6px", border: "1px solid var(--border)", background: "var(--surface-2)", color: "var(--text-primary)", fontSize: "13px", fontFamily: "monospace" }}
+                    />
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                    <label style={{ fontSize: "12px", color: "var(--text-secondary)", fontWeight: 600 }}>
+                      Puerto
+                    </label>
+                    <input
+                      type="number"
+                      value={dicomPort}
+                      onChange={(e) => { setDicomPort(Number(e.target.value)); setDicomVerifyState({ label: "", tone: "neutral" }); }}
+                      min={1}
+                      max={65535}
+                      style={{ padding: "8px 10px", borderRadius: "6px", border: "1px solid var(--border)", background: "var(--surface-2)", color: "var(--text-primary)", fontSize: "13px", fontFamily: "monospace" }}
+                    />
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                    <label style={{ fontSize: "12px", color: "var(--text-secondary)", fontWeight: 600 }}>
+                      AE Title origen (AURA)
+                    </label>
+                    <input
+                      type="text"
+                      value={dicomSourceAe}
+                      onChange={(e) => setDicomSourceAe(e.target.value.toUpperCase())}
+                      placeholder="AURA_RT"
+                      maxLength={16}
+                      style={{ padding: "8px 10px", borderRadius: "6px", border: "1px solid var(--border)", background: "var(--surface-2)", color: "var(--text-primary)", fontSize: "13px", fontFamily: "monospace" }}
+                    />
+                  </div>
+                </div>
+
+                {/* Botón verificar + estado */}
+                <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                  <button
+                    onClick={verifyDicom}
+                    style={{
+                      padding: "8px 18px", borderRadius: "6px",
+                      background: "var(--accent)", color: "#fff",
+                      border: "none", cursor: "pointer", fontSize: "13px", fontWeight: 600,
+                    }}
+                  >
+                    Verificar C-ECHO
+                  </button>
+                  {dicomVerifyState.label && (
+                    <span style={{
+                      fontSize: "13px",
+                      color: dicomVerifyState.tone === "success" ? "#22c55e"
+                           : dicomVerifyState.tone === "danger"  ? "#ef4444"
+                           : "var(--text-secondary)",
+                    }}>
+                      {dicomVerifyState.label}
+                    </span>
+                  )}
+                </div>
+
+                {/* Info de configuración en ARIA/Monaco */}
+                <details style={{ fontSize: "12px", color: "var(--text-secondary)" }}>
+                  <summary style={{ cursor: "pointer", fontWeight: 600, marginBottom: "6px" }}>
+                    ¿Cómo configurar el SCP en Eclipse/ARIA o Monaco?
+                  </summary>
+                  <div style={{ paddingLeft: "12px", lineHeight: "1.7" }}>
+                    <strong>Eclipse/ARIA (Varian):</strong><br/>
+                    ARIA → Administration → DICOM SCP → agregar AE Source con AE Title <code>AURA_RT</code>
+                    y la IP del servidor Colab/ngrok. Puerto destino: el que usa ARIA Storage SCP (default 104).<br/><br/>
+                    <strong>Monaco (Elekta):</strong><br/>
+                    Monaco → System → DICOM → Storage SCP → agregar como nodo permitido el AE Title <code>AURA_RT</code>.<br/><br/>
+                    <strong>Nota ngrok:</strong> Si el backend corre en Colab con ngrok, el C-STORE no puede
+                    usar la URL ngrok (es HTTPS, no DICOM). El backend debe tener acceso de red directo al SCP.
+                    En producción, ARIA y el servidor Colab deben estar en la misma red o VPN.
+                  </div>
+                </details>
               </div>
             )}
           </div>
@@ -1852,6 +2066,19 @@ export default function App() {
                         <span>Tiempo</span>
                         <strong>{formatDuration(result.processing_seconds)}</strong>
                       </div>
+                      {result.dicom_send_summary && (
+                        <div className="result-summary" style={{ gridColumn: "1 / -1" }}>
+                          <span>C-STORE</span>
+                          <strong style={{
+                            color: result.dicom_send_summary.startsWith("C-STORE completado")
+                              ? "#22c55e" : "#ef4444",
+                            fontSize: "12px",
+                            fontFamily: "monospace",
+                          }}>
+                            {result.dicom_send_summary}
+                          </strong>
+                        </div>
+                      )}
                     </div>
 
                     <div className="result-section">
