@@ -1,61 +1,110 @@
 # AURA-RT Segmentation Platform
 
-Repositorio inicial para segmentacion automatica de TC con backend remoto y cliente web.
+Plataforma de segmentación automática de TC para planificación de radioterapia. El backend corre en Google Colab (GPU remota) y se expone públicamente via ngrok. Los clientes —web o desktop— se conectan a esa URL para enviar estudios y recibir el RT-STRUCT resultante.
 
-- `backend/`: servicio FastAPI preparado para local o Google Colab, con routing a TotalSegmentator y generacion de DICOM RT-STRUCT.
-- `webapp/`: cliente React + Vite con estetica WhiteSur/macOS Big Sur, pensado para navegador.
-- `client/`: prototipo previo de cliente Python local. Se conserva como referencia, pero la direccion actual del producto es web app.
+```
+                  ┌─────────────────────────────────┐
+                  │        Google Colab (GPU)        │
+                  │  FastAPI + TotalSegmentator v2   │
+                  │  uvicorn · ngrok tunnel          │
+                  └────────────────┬────────────────┘
+                                   │ HTTPS (ngrok URL)
+              ┌────────────────────┴────────────────────┐
+              │                                         │
+   ┌──────────▼──────────┐               ┌─────────────▼──────────┐
+   │      Web App         │               │    Desktop Client       │
+   │   React + Vite       │               │  Python + customtkinter │
+   │  Cualquier navegador │               │  Windows                │
+   └─────────────────────┘               └────────────────────────┘
+```
 
-## Estado actual
+> **Advertencia clínica:** Los contornos generados son un punto de partida y deben ser revisados y aprobados por el médico tratante antes de cualquier uso clínico. Esta plataforma **no es un dispositivo médico**.
 
-La implementacion actual cubre un MVP tecnico en evolucion:
+---
 
-- Backend con `GET /health`, `GET /status` y `POST /segment`
-- CORS habilitado para desarrollo del cliente web
-- Routing a `TotalSegmentator` para estructuras abdominales MVP
-- Generacion de `RT-STRUCT` con `rt-utils`
-- Soporte de payload web:
-  - `config.json`
-  - `dicom/`
-  - `input.nii.gz` opcional
-- Web app con:
-  - configuracion de URL del servidor
-  - verificacion de conexion
-  - carga de carpeta DICOM desde navegador
-  - lectura de metadata basica del estudio
-  - preview real de un slice DICOM no comprimido
-  - seleccion de estructuras y presets
-  - polling de estado
-  - envio HTTP a `/segment`
-  - descarga del ZIP de salida
+## Estado actual — v0.2.0
 
-MONAI UNesT y nnU-Net pelvico siguen planificados pero no implementados.
+### Backend ✅
+- `GET /health` — estado del servicio y estructuras soportadas
+- `GET /status` — progreso del caso activo con polling
+- `POST /segment` — recibe ZIP, devuelve ZIP con RT-STRUCT
+- Routing a **TotalSegmentator v2** para 21 estructuras
+- Conversión DICOM → NIfTI integrada (SimpleITK + fallback pydicom)
+- Generación de RT-STRUCT con `rt-utils`
+- Suavizado gaussiano 3 mm post-segmentación
+- CORS abierto para desarrollo
 
-## Estructura
+### Web App ✅
+- Configuración de URL del backend (ngrok o local)
+- Verificación de conexión contra `/health`
+- Carga de carpeta DICOM desde el navegador
+- Preview de slice central
+- Selección de estructuras y presets
+- Polling de estado en tiempo real
+- Envío HTTP y descarga del ZIP de salida
 
-```text
+### Desktop Client ✅ *(Windows)*
+- GUI completa con `customtkinter` (5 tabs)
+- Selección de carpeta DICOM con preview matplotlib
+- **Anonimización de PHI** antes del envío (PatientName, DOB, 12 tags DICOM)
+- Conversión local DICOM → NIfTI antes de enviar
+- Polling de `/status` en hilo separado
+- Descarga streaming con soporte de cancelación
+- Apertura automática de carpeta de salida en Windows
+
+### Planificado 🔜
+- MONAI UNesT (estructuras de cabeza y cuello)
+- nnU-Net pélvico
+
+---
+
+## Estructuras soportadas (TotalSegmentator v2)
+
+| Grupo | Estructuras |
+|---|---|
+| Abdomen | Hígado, Bazo, Riñón D/I, Páncreas, Vesícula, Aorta abdominal, Estómago, Intestino |
+| Tórax | Pulmón D/I, Corazón, Tráquea, Esófago |
+| Esqueleto | Vértebras, Pelvis ósea, Fémures, Costillas |
+| Pelvis masculina | Próstata, Vejiga *(+ otros planificados)* |
+| Neurológico | Cerebro *(+ otros planificados)* |
+
+---
+
+## Estructura del repositorio
+
+```
 backend/
-  aura_rt_backend/
-  notebooks/
+  aura_rt_backend/       # FastAPI app (main, pipeline, rtstruct_builder, etc.)
+  notebooks/             # AURA_RT_Colab_MVP.ipynb
+  scripts/
+    colab_bootstrap.py   # Setup automático en Colab
   requirements-colab.txt
   .env.example
-  scripts/colab_bootstrap.py
-client/
+client/                  # Cliente desktop Python/Windows
   aura_rt_client/
-webapp/
+    app.py               # GUI customtkinter
+    dicom_utils.py       # Anonimización, conversión, packaging
+    http_client.py       # HTTP con streaming y cancelación
+    models.py            # Estructuras MVP y presets
+  requirements.txt
+webapp/                  # Cliente web React + Vite
   src/
+    App.jsx              # App principal
+    catalog.js           # Catálogo de estructuras y presets
+    dicom.js             # Lectura DICOM en el browser
+    nifti.js             # Preview NIfTI en el browser
   package.json
   .env.example
 scripts/
-  run_backend.ps1
-  run_backend.bat
-  run_webapp.ps1
-  run_webapp.bat
+  run_backend.ps1 / .bat
+  run_webapp.ps1 / .bat
 ```
+
+---
 
 ## Backend
 
-Instalacion:
+### Instalación local
 
 ```powershell
 python -m venv .venv
@@ -63,88 +112,126 @@ python -m venv .venv
 pip install -r backend/requirements-colab.txt
 ```
 
-Ejecucion directa:
+### Ejecución local
 
 ```powershell
+# Con script (genera .env automáticamente si no existe)
+.\scripts\run_backend.ps1
+
+# O directamente
 python -m uvicorn aura_rt_backend.main:app --app-dir backend --host 0.0.0.0 --port 8000
 ```
 
-Ejecucion con script:
+### Variables de entorno (`backend/.env`)
 
-```powershell
-.\scripts\run_backend.ps1
-```
+| Variable | Default | Descripción |
+|---|---|---|
+| `AURA_RT_PORT` | `8000` | Puerto de escucha |
+| `AURA_RT_LOG_LEVEL` | `INFO` | Nivel de log |
+| `AURA_RT_CORS_ORIGINS` | `*` | Orígenes CORS permitidos |
+| `TOTALSEG_HOME_DIR` | *(vacío)* | Cache de modelos TotalSegmentator |
+| `NGROK_AUTHTOKEN` | *(vacío)* | Token ngrok para Colab |
 
-Si `backend/.env` no existe, el script lo genera automaticamente a partir de `backend/.env.example`.
-
-En Windows tambien podes usar:
-
-```bat
-scripts\run_backend.bat
-```
+---
 
 ## Web App
 
-Instalacion:
+### Instalación
 
 ```powershell
 cd webapp
 npm install
 ```
 
-Desarrollo:
+### Desarrollo
 
 ```powershell
+# Desde webapp/
 Copy-Item .env.example .env
 npm run dev
-```
 
-o desde la raiz:
-
-```powershell
+# O desde la raíz
 .\scripts\run_webapp.ps1
 ```
 
-En Windows tambien podes usar:
+### Variable de entorno (`webapp/.env`)
 
-```bat
-scripts\run_webapp.bat
+| Variable | Default | Descripción |
+|---|---|---|
+| `VITE_AURA_RT_DEFAULT_SERVER_URL` | `http://127.0.0.1:8000` | URL pre-cargada al abrir la app |
+| `VITE_AURA_RT_POLL_INTERVAL_MS` | `5000` | Intervalo de polling de `/status` |
+
+---
+
+## Desktop Client (Windows)
+
+Cliente alternativo con anonimización local de PHI, pensado para entornos donde los datos del paciente no deben salir del equipo sin ser procesados primero.
+
+### Instalación
+
+```powershell
+cd client
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
 ```
 
-## Contrato actual del payload
+### Ejecución
 
-El cliente web empaqueta un ZIP con:
-
-- `config.json`
-- `dicom/`
-- `input.nii.gz` opcional
-
-Si `input.nii.gz` no viene, el backend convierte la serie DICOM a NIfTI antes de correr TotalSegmentator.
-
-El backend responde un ZIP con:
-
-- `CT/` con la serie DICOM recibida
-- `masks/` con las mascaras NIfTI generadas
-- `RS.<case_id>.dcm`
-- `report.json`
-
-## Colab
-
-El script `backend/scripts/colab_bootstrap.py` deja preparado el arranque en Colab:
-
-- instala dependencias
-- prepara cache en Google Drive
-- arranca `uvicorn`
-- expone el puerto con ngrok via `pyngrok`
-
-Necesita un `NGROK_AUTHTOKEN` valido en el entorno de Colab.
-
-Notebook reproducible:
-
-```text
-backend/notebooks/AURA_RT_Colab_MVP.ipynb
+```powershell
+python -m aura_rt_client.app
 ```
 
-## Advertencia
+### Diferencias respecto a la web app
 
-Esto **no es un dispositivo medico**. Todos los contornos deben ser revisados por el medico tratante antes de cualquier uso clinico.
+| Característica | Web App | Desktop Client |
+|---|---|---|
+| Plataforma | Cualquier navegador | Windows |
+| Anonimización PHI | ❌ (el usuario es responsable) | ✅ Automática antes del envío |
+| Conversión DICOM → NIfTI | En el backend | Local antes de enviar |
+| Estructuras disponibles | 21 (catálogo completo) | 5 (MVP: abdomen core) |
+| Preview de slice | ✅ | ✅ |
+| Cancelación mid-flight | ✅ | ✅ |
+
+> **Nota:** El cliente desktop cubre solo el subconjunto MVP de estructuras. Para acceder a las 21 estructuras, usar la web app.
+
+---
+
+## Google Colab
+
+El notebook `backend/notebooks/AURA_RT_Colab_MVP.ipynb` levanta el backend completo en Colab con GPU y lo expone públicamente via ngrok.
+
+El script `backend/scripts/colab_bootstrap.py`:
+- Instala dependencias
+- Prepara caché de modelos en Google Drive
+- Arranca `uvicorn`
+- Expone el puerto con `pyngrok`
+
+Requiere un `NGROK_AUTHTOKEN` válido en los secrets de Colab. Una vez corriendo, copiar la URL ngrok en la configuración del cliente (web app o desktop).
+
+---
+
+## Contrato del payload
+
+### Request (`POST /segment`)
+
+ZIP con:
+```
+config.json          # { structures, modality, fast_mode, anonymized_id }
+dicom/               # Serie CT (puede estar en subcarpetas)
+input.nii.gz         # Opcional — si no viene, el backend convierte la serie
+```
+
+### Response
+
+ZIP con:
+```
+CT/                  # Serie DICOM recibida
+masks/               # Máscaras NIfTI por estructura
+RS.<case_id>.dcm     # DICOM RT-STRUCT listo para importar
+report.json          # Resumen: estructuras, modelos, tiempo, warnings
+```
+
+### Importación en Eclipse/ARIA
+
+`File > Import > DICOM` → seleccionar carpeta `CT/` y luego el archivo `RS.*.dcm`.
