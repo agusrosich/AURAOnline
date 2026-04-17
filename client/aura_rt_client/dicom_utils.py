@@ -150,6 +150,83 @@ def load_report(output_dir: Path) -> dict[str, object]:
     return json.loads(report_path.read_text(encoding="utf-8"))
 
 
+def _load_mask_for_rtstruct(mask_path: Path) -> np.ndarray:
+    image = sitk.ReadImage(str(mask_path))
+    mask = sitk.GetArrayFromImage(image) > 0
+    return np.transpose(mask, (1, 2, 0))
+
+
+def _discover_dicom_series_dir(dicom_root: Path) -> Path:
+    candidate_dirs = [dicom_root, *sorted(path for path in dicom_root.rglob("*") if path.is_dir())]
+    discovered_series: list[tuple[Path, list[str]]] = []
+
+    for candidate_dir in candidate_dirs:
+        try:
+            series_ids = sitk.ImageSeriesReader.GetGDCMSeriesIDs(str(candidate_dir)) or []
+        except RuntimeError:
+            continue
+
+        for series_id in series_ids:
+            series_file_names = list(
+                sitk.ImageSeriesReader.GetGDCMSeriesFileNames(str(candidate_dir), series_id)
+            )
+            if series_file_names:
+                discovered_series.append((candidate_dir, series_file_names))
+
+        if series_ids:
+            continue
+
+        series_file_names = list(sitk.ImageSeriesReader.GetGDCMSeriesFileNames(str(candidate_dir)))
+        if series_file_names:
+            discovered_series.append((candidate_dir, series_file_names))
+
+    if not discovered_series:
+        raise ValueError("No se encontro una serie DICOM valida dentro de la carpeta CT exportada.")
+
+    selected_dir, _ = max(discovered_series, key=lambda item: len(item[1]))
+    return selected_dir
+
+
+def build_custom_rtstruct(
+    dicom_root: Path,
+    structures: dict[str, tuple[Path, tuple[int, int, int]]],
+    output_path: Path,
+) -> Path:
+    if not structures:
+        raise ValueError("Debe seleccionar al menos una estructura para exportar.")
+
+    try:
+        from rt_utils import RTStructBuilder
+    except ImportError as exc:
+        raise RuntimeError(
+            "Falta la dependencia 'rt-utils'. Instalala en el cliente para exportar RT-STRUCT personalizados."
+        ) from exc
+
+    dicom_series_dir = _discover_dicom_series_dir(dicom_root)
+    rtstruct = RTStructBuilder.create_new(dicom_series_path=str(dicom_series_dir))
+    added_rois = 0
+
+    for clinical_name, (mask_path, color) in structures.items():
+        if not mask_path.exists():
+            continue
+        mask = _load_mask_for_rtstruct(mask_path)
+        if not mask.any():
+            continue
+        rtstruct.add_roi(
+            mask=mask.astype(bool),
+            color=list(color),
+            name=clinical_name,
+        )
+        added_rois += 1
+
+    if added_rois == 0:
+        raise ValueError("No se pudo construir el RT-STRUCT porque ninguna mascara seleccionada tiene voxeles.")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    rtstruct.save(str(output_path))
+    return output_path
+
+
 def open_in_file_manager(path: Path) -> None:
     if os.name == "nt":
         os.startfile(path)  # type: ignore[attr-defined]

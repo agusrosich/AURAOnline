@@ -4,7 +4,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from tkinter import filedialog, messagebox
+from tkinter import colorchooser, filedialog, messagebox
 from typing import Optional
 
 import customtkinter as ctk
@@ -14,6 +14,7 @@ from matplotlib.figure import Figure
 from .dicom_utils import (
     SeriesInfo,
     anonymize_dicom_series,
+    build_custom_rtstruct,
     convert_series_to_nifti,
     create_request_archive,
     extract_response_archive,
@@ -23,7 +24,16 @@ from .dicom_utils import (
     open_in_file_manager,
 )
 from .http_client import HttpClientError, SegmentationHttpClient
-from .models import DISCLAIMER_TEXT, ESTIMATED_MINUTES, IMPORT_INSTRUCTIONS, MVP_STRUCTURE_OPTIONS, PRESETS, REFERENCE_DSC
+from .models import (
+    DISCLAIMER_TEXT,
+    ESTIMATED_MINUTES,
+    IMPORT_INSTRUCTIONS,
+    MVP_STRUCTURE_OPTIONS,
+    PRESETS,
+    REFERENCE_DSC,
+    structure_default_color,
+    structure_display_name,
+)
 
 
 ctk.set_appearance_mode("System")
@@ -52,8 +62,17 @@ class AuraRtClientApp(ctk.CTk):
         self.polling_thread: Optional[threading.Thread] = None
         self.status_polling_active = False
         self.last_output_dir: Optional[Path] = None
+        self.last_report: Optional[dict[str, object]] = None
+        self.current_output_ct_dir: Optional[Path] = None
+        self.current_output_original_rtstruct: Optional[Path] = None
+        self.export_structure_vars: dict[str, ctk.BooleanVar] = {}
+        self.export_structure_colors: dict[str, tuple[int, int, int]] = {}
+        self.export_structure_mask_paths: dict[str, Path] = {}
+        self.export_structure_swatches: dict[str, ctk.CTkLabel] = {}
+        self.export_status_var = ctk.StringVar(value="Todavia no hay estructuras cargadas para exportar.")
 
         self._build_layout()
+        self._clear_export_editor()
         self._update_estimate()
 
     def _build_layout(self) -> None:
@@ -218,17 +237,90 @@ class AuraRtClientApp(ctk.CTk):
 
     def _build_result_tab(self) -> None:
         self.result_tab.grid_columnconfigure(0, weight=1)
+        self.result_tab.grid_columnconfigure(1, weight=0)
+        self.result_tab.grid_rowconfigure(1, weight=1)
 
         ctk.CTkLabel(
             self.result_tab,
             textvariable=self.result_summary_var,
             justify="left",
-            wraplength=960,
+            wraplength=1180,
             anchor="w",
-        ).grid(row=0, column=0, padx=20, pady=(24, 8), sticky="ew")
+        ).grid(row=0, column=0, columnspan=2, padx=20, pady=(24, 8), sticky="ew")
 
         self.result_box = ctk.CTkTextbox(self.result_tab, height=320)
-        self.result_box.grid(row=1, column=0, padx=20, pady=8, sticky="ew")
+        self.result_box.grid(row=1, column=0, padx=(20, 12), pady=8, sticky="nsew")
+
+        sidebar = ctk.CTkFrame(self.result_tab, width=360)
+        sidebar.grid(row=1, column=1, rowspan=2, padx=(0, 20), pady=8, sticky="ns")
+        sidebar.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            sidebar,
+            text="Barra de exportacion",
+            font=ctk.CTkFont(size=17, weight="bold"),
+            anchor="w",
+        ).grid(row=0, column=0, padx=16, pady=(16, 6), sticky="ew")
+
+        ctk.CTkLabel(
+            sidebar,
+            text=(
+                "Elegi que estructuras incluir en el RT-STRUCT final, "
+                "quitalas de la exportacion o cambia su color antes de guardarlo."
+            ),
+            justify="left",
+            wraplength=300,
+            anchor="w",
+        ).grid(row=1, column=0, padx=16, pady=(0, 10), sticky="ew")
+
+        self.export_structure_list = ctk.CTkScrollableFrame(sidebar, width=320, height=340)
+        self.export_structure_list.grid(row=2, column=0, padx=16, pady=(0, 12), sticky="nsew")
+        sidebar.grid_rowconfigure(2, weight=1)
+
+        self.export_status_label = ctk.CTkLabel(
+            sidebar,
+            textvariable=self.export_status_var,
+            justify="left",
+            wraplength=300,
+            anchor="w",
+        )
+        self.export_status_label.grid(row=3, column=0, padx=16, pady=(0, 12), sticky="ew")
+
+        self.export_button = ctk.CTkButton(
+            sidebar,
+            text="Exportar RT-STRUCT personalizado",
+            command=self._export_custom_rtstruct,
+            state="disabled",
+        )
+        self.export_button.grid(row=4, column=0, padx=16, pady=(0, 8), sticky="ew")
+
+        action_frame = ctk.CTkFrame(sidebar, fg_color="transparent")
+        action_frame.grid(row=5, column=0, padx=16, pady=(0, 16), sticky="ew")
+        action_frame.grid_columnconfigure((0, 1), weight=1)
+
+        self.select_all_button = ctk.CTkButton(
+            action_frame,
+            text="Seleccionar todas",
+            command=self._select_all_export_structures,
+            state="disabled",
+        )
+        self.select_all_button.grid(row=0, column=0, padx=(0, 6), pady=(0, 6), sticky="ew")
+
+        self.clear_selection_button = ctk.CTkButton(
+            action_frame,
+            text="Quitar todas",
+            command=self._clear_export_structures,
+            state="disabled",
+        )
+        self.clear_selection_button.grid(row=0, column=1, padx=(6, 0), pady=(0, 6), sticky="ew")
+
+        self.reset_colors_button = ctk.CTkButton(
+            action_frame,
+            text="Restaurar colores",
+            command=self._reset_export_colors,
+            state="disabled",
+        )
+        self.reset_colors_button.grid(row=1, column=0, columnspan=2, pady=(0, 0), sticky="ew")
 
         open_button = ctk.CTkButton(
             self.result_tab,
@@ -241,8 +333,300 @@ class AuraRtClientApp(ctk.CTk):
             self.result_tab,
             text=IMPORT_INSTRUCTIONS,
             justify="left",
-            wraplength=960,
-        ).grid(row=3, column=0, padx=20, pady=(0, 24), sticky="w")
+            wraplength=1180,
+        ).grid(row=3, column=0, columnspan=2, padx=20, pady=(0, 24), sticky="w")
+
+    @staticmethod
+    def _rgb_to_hex(color: tuple[int, int, int]) -> str:
+        return "#" + "".join(f"{component:02x}" for component in color)
+
+    @staticmethod
+    def _mask_name_from_path(mask_path: Path) -> str:
+        if mask_path.name.lower().endswith(".nii.gz"):
+            return mask_path.name[:-7]
+        return mask_path.stem
+
+    def _set_export_status(self, message: str, *, tone: str = "neutral") -> None:
+        tone_colors = {
+            "neutral": ("gray10", "gray90"),
+            "success": "#166534",
+            "warning": "#a16207",
+            "danger": "#b91c1c",
+        }
+        self.export_status_var.set(message)
+        self.export_status_label.configure(text_color=tone_colors.get(tone, tone_colors["neutral"]))
+
+    def _clear_export_editor(self, *, message: str = "Todavia no hay estructuras cargadas para exportar.") -> None:
+        for child in self.export_structure_list.winfo_children():
+            child.destroy()
+
+        self.export_structure_vars.clear()
+        self.export_structure_colors.clear()
+        self.export_structure_mask_paths.clear()
+        self.export_structure_swatches.clear()
+
+        placeholder = ctk.CTkLabel(
+            self.export_structure_list,
+            text=message,
+            justify="left",
+            wraplength=260,
+        )
+        placeholder.grid(row=0, column=0, padx=8, pady=8, sticky="w")
+
+        self.export_button.configure(state="disabled")
+        self.select_all_button.configure(state="disabled")
+        self.clear_selection_button.configure(state="disabled")
+        self.reset_colors_button.configure(state="disabled")
+        self._set_export_status(message, tone="neutral")
+
+    def _refresh_export_status(self) -> None:
+        total = len(self.export_structure_vars)
+        selected = sum(1 for variable in self.export_structure_vars.values() if variable.get())
+
+        if total == 0:
+            self._set_export_status("Todavia no hay estructuras cargadas para exportar.", tone="neutral")
+            self.export_button.configure(state="disabled")
+            self.select_all_button.configure(state="disabled")
+            self.clear_selection_button.configure(state="disabled")
+            self.reset_colors_button.configure(state="disabled")
+            return
+
+        self.export_button.configure(state="normal" if selected > 0 else "disabled")
+        self.select_all_button.configure(state="normal")
+        self.clear_selection_button.configure(state="normal")
+        self.reset_colors_button.configure(state="normal")
+
+        if selected == 0:
+            self._set_export_status(
+                f"No hay estructuras marcadas para exportar. Desmarcaste las {total} disponibles.",
+                tone="warning",
+            )
+            return
+
+        self._set_export_status(
+            f"Se exportaran {selected} de {total} estructuras. El RT-STRUCT original no se modifica.",
+            tone="neutral",
+        )
+
+    def _add_export_structure_row(self, structure_name: str, *, row_index: int) -> None:
+        row_frame = ctk.CTkFrame(self.export_structure_list)
+        row_frame.grid(row=row_index, column=0, padx=6, pady=6, sticky="ew")
+        row_frame.grid_columnconfigure(2, weight=1)
+
+        enabled_var = ctk.BooleanVar(value=True)
+        enabled_var.trace_add("write", lambda *_: self._refresh_export_status())
+        self.export_structure_vars[structure_name] = enabled_var
+
+        color = structure_default_color(structure_name)
+        self.export_structure_colors[structure_name] = color
+
+        checkbox = ctk.CTkCheckBox(row_frame, text="", variable=enabled_var, width=24)
+        checkbox.grid(row=0, column=0, rowspan=2, padx=(10, 6), pady=10, sticky="n")
+
+        swatch = ctk.CTkLabel(
+            row_frame,
+            text="",
+            width=22,
+            height=22,
+            fg_color=self._rgb_to_hex(color),
+            corner_radius=6,
+        )
+        swatch.grid(row=0, column=1, rowspan=2, padx=(0, 8), pady=10, sticky="n")
+        self.export_structure_swatches[structure_name] = swatch
+
+        ctk.CTkLabel(
+            row_frame,
+            text=structure_display_name(structure_name),
+            anchor="w",
+            font=ctk.CTkFont(size=14, weight="bold"),
+        ).grid(row=0, column=2, padx=(0, 8), pady=(8, 0), sticky="ew")
+
+        reference_text = REFERENCE_DSC.get(structure_name)
+        metadata = structure_name if not reference_text else f"{structure_name} - {reference_text}"
+        ctk.CTkLabel(
+            row_frame,
+            text=metadata,
+            anchor="w",
+            justify="left",
+            text_color=("gray45", "gray65"),
+        ).grid(row=1, column=2, padx=(0, 8), pady=(0, 8), sticky="ew")
+
+        actions_frame = ctk.CTkFrame(row_frame, fg_color="transparent")
+        actions_frame.grid(row=0, column=3, rowspan=2, padx=(0, 10), pady=8, sticky="e")
+
+        ctk.CTkButton(
+            actions_frame,
+            text="Color",
+            width=68,
+            command=lambda name=structure_name: self._choose_export_structure_color(name),
+        ).grid(row=0, column=0, pady=(0, 6), sticky="ew")
+
+        ctk.CTkButton(
+            actions_frame,
+            text="Excluir",
+            width=68,
+            fg_color="#991b1b",
+            hover_color="#7f1d1d",
+            command=lambda name=structure_name: self._exclude_export_structure(name),
+        ).grid(row=1, column=0, sticky="ew")
+
+    def _populate_export_editor(self, output_root: Path, report: dict[str, object]) -> None:
+        self.current_output_ct_dir = output_root / "CT"
+        self.current_output_original_rtstruct = next(output_root.glob("RS*.dcm"), None)
+
+        if not self.current_output_ct_dir.exists():
+            self._clear_export_editor(message="No se encontro la carpeta CT del resultado. No es posible exportar un RT-STRUCT nuevo.")
+            return
+
+        masks_dir = output_root / "masks"
+        mask_paths = {
+            self._mask_name_from_path(mask_path): mask_path
+            for mask_path in sorted(masks_dir.glob("*.nii.gz"))
+        }
+        generated_structures = [str(item) for item in report.get("generated_structures", [])]
+
+        ordered_structures: list[str] = []
+        for structure_name in generated_structures:
+            if structure_name in mask_paths and structure_name not in ordered_structures:
+                ordered_structures.append(structure_name)
+        for structure_name in sorted(mask_paths):
+            if structure_name not in ordered_structures:
+                ordered_structures.append(structure_name)
+
+        if not ordered_structures:
+            self._clear_export_editor(message="El resultado no trae mascaras NIfTI editables para exportar.")
+            return
+
+        for child in self.export_structure_list.winfo_children():
+            child.destroy()
+
+        self.export_structure_vars.clear()
+        self.export_structure_colors.clear()
+        self.export_structure_mask_paths.clear()
+        self.export_structure_swatches.clear()
+
+        for row_index, structure_name in enumerate(ordered_structures):
+            self.export_structure_mask_paths[structure_name] = mask_paths[structure_name]
+            self._add_export_structure_row(structure_name, row_index=row_index)
+
+        self._refresh_export_status()
+
+    def _choose_export_structure_color(self, structure_name: str) -> None:
+        current_color = self.export_structure_colors.get(
+            structure_name,
+            structure_default_color(structure_name),
+        )
+        rgb_color, _ = colorchooser.askcolor(
+            color=self._rgb_to_hex(current_color),
+            title=f"Elegir color para {structure_display_name(structure_name)}",
+            parent=self,
+        )
+        if rgb_color is None:
+            return
+
+        next_color = tuple(max(0, min(255, int(round(component)))) for component in rgb_color)
+        self.export_structure_colors[structure_name] = next_color
+        swatch = self.export_structure_swatches.get(structure_name)
+        if swatch is not None:
+            swatch.configure(fg_color=self._rgb_to_hex(next_color))
+        self._set_export_status(
+            f"Color actualizado para {structure_display_name(structure_name)}.",
+            tone="neutral",
+        )
+
+    def _exclude_export_structure(self, structure_name: str) -> None:
+        variable = self.export_structure_vars.get(structure_name)
+        if variable is None:
+            return
+        variable.set(False)
+
+    def _select_all_export_structures(self) -> None:
+        for variable in self.export_structure_vars.values():
+            variable.set(True)
+        self._set_export_status("Todas las estructuras quedaron marcadas para exportacion.", tone="neutral")
+
+    def _clear_export_structures(self) -> None:
+        for variable in self.export_structure_vars.values():
+            variable.set(False)
+        self._set_export_status("Se quitaron todas las estructuras de la exportacion.", tone="warning")
+
+    def _reset_export_colors(self) -> None:
+        for structure_name in self.export_structure_colors:
+            default_color = structure_default_color(structure_name)
+            self.export_structure_colors[structure_name] = default_color
+            swatch = self.export_structure_swatches.get(structure_name)
+            if swatch is not None:
+                swatch.configure(fg_color=self._rgb_to_hex(default_color))
+        self._set_export_status("Colores restaurados a los valores por defecto.", tone="neutral")
+
+    def _selected_export_structures(self) -> dict[str, tuple[Path, tuple[int, int, int]]]:
+        selected_structures: dict[str, tuple[Path, tuple[int, int, int]]] = {}
+
+        for structure_name, variable in self.export_structure_vars.items():
+            if not variable.get():
+                continue
+            mask_path = self.export_structure_mask_paths.get(structure_name)
+            if mask_path is None:
+                continue
+            selected_structures[structure_name] = (
+                mask_path,
+                self.export_structure_colors.get(structure_name, structure_default_color(structure_name)),
+            )
+
+        return selected_structures
+
+    def _export_custom_rtstruct(self) -> None:
+        if self.current_output_ct_dir is None or self.last_report is None:
+            messagebox.showwarning("Exportacion", "Todavia no hay un resultado listo para exportar.")
+            return
+
+        selected_structures = self._selected_export_structures()
+        if not selected_structures:
+            messagebox.showwarning(
+                "Exportacion",
+                "Marca al menos una estructura en la barra derecha antes de exportar.",
+            )
+            self._set_export_status("No hay estructuras seleccionadas para exportacion.", tone="warning")
+            return
+
+        destination = filedialog.askdirectory(
+            title="Seleccionar carpeta destino para el RT-STRUCT personalizado"
+        )
+        if not destination:
+            return
+
+        case_id = str(self.last_report.get("case_id", "CUSTOM"))
+        output_path = Path(destination) / f"RS.{case_id}.custom.dcm"
+
+        if output_path.exists():
+            should_replace = messagebox.askyesno(
+                "Exportacion",
+                f"El archivo {output_path.name} ya existe.\n\nDesea reemplazarlo?",
+                parent=self,
+            )
+            if not should_replace:
+                return
+
+        try:
+            build_custom_rtstruct(
+                dicom_root=self.current_output_ct_dir,
+                structures=selected_structures,
+                output_path=output_path,
+            )
+        except Exception as exc:
+            self._set_export_status(f"Error al exportar: {exc}", tone="danger")
+            messagebox.showerror("Exportacion", str(exc), parent=self)
+            return
+
+        self._set_export_status(f"RT-STRUCT exportado en {output_path}.", tone="success")
+        self._append_log(
+            f"RT-STRUCT personalizado exportado en {output_path} con {len(selected_structures)} estructura(s)."
+        )
+        messagebox.showinfo(
+            "Exportacion",
+            f"RT-STRUCT personalizado guardado en:\n{output_path}",
+            parent=self,
+        )
 
     def _set_metadata_text(self, text: str) -> None:
         self.metadata_box.configure(state="normal")
@@ -342,6 +726,11 @@ class AuraRtClientApp(ctk.CTk):
         self.start_button.configure(state="disabled")
         self.result_box.delete("1.0", "end")
         self.result_summary_var.set("Procesando caso...")
+        self.last_output_dir = None
+        self.last_report = None
+        self.current_output_ct_dir = None
+        self.current_output_original_rtstruct = None
+        self._clear_export_editor(message="Esperando un nuevo resultado para habilitar la exportacion.")
         self._set_stage("Anonimizando", 0.05)
         self._append_log("Inicio de procesamiento local.")
 
@@ -416,11 +805,13 @@ class AuraRtClientApp(ctk.CTk):
         generated_structures = report.get("generated_structures", [])
         models_used = report.get("models_used", [])
         processing_seconds = report.get("processing_seconds", 0)
+        original_rtstruct = next(output_root.glob("RS*.dcm"), None)
 
         lines = [
             f"Case ID: {report.get('case_id', 'N/D')}",
             f"Modelos usados: {', '.join(models_used) if models_used else 'N/D'}",
             f"Tiempo total: {processing_seconds} s",
+            f"RT-STRUCT original: {original_rtstruct.name if original_rtstruct else 'No encontrado'}",
             "",
             "Estructuras generadas:",
         ]
@@ -429,8 +820,12 @@ class AuraRtClientApp(ctk.CTk):
 
         self.result_box.delete("1.0", "end")
         self.result_box.insert("1.0", "\n".join(lines))
+        self.last_report = report
+        self.current_output_ct_dir = output_root / "CT"
+        self.current_output_original_rtstruct = original_rtstruct
+        self._populate_export_editor(output_root, report)
         self.result_summary_var.set(
-            f"Resultado disponible en {output_root}. RT-STRUCT y CT listos para importacion."
+            f"Resultado disponible en {output_root}. Podes revisar la barra derecha para elegir, quitar o recolorear estructuras antes de exportar."
         )
         self._append_log("Caso completado y resultados descomprimidos.")
         self.tabview.set("Resultado")

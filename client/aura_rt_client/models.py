@@ -24,6 +24,24 @@ REFERENCE_DSC = {
 }
 
 
+STRUCTURE_DISPLAY_NAMES = {
+    "Liver": "Higado",
+    "Spleen": "Bazo",
+    "Kidney_R": "Rinon derecho",
+    "Kidney_L": "Rinon izquierdo",
+    "Pancreas": "Pancreas",
+}
+
+
+STRUCTURE_DEFAULT_COLORS = {
+    "Liver": (0, 102, 204),
+    "Spleen": (0, 153, 255),
+    "Kidney_R": (51, 153, 255),
+    "Kidney_L": (102, 178, 255),
+    "Pancreas": (0, 128, 255),
+}
+
+
 @dataclass(frozen=True)
 class StructureOption:
     key: str
@@ -51,4 +69,12 @@ ESTIMATED_MINUTES = {
     "kidney_left": 2,
     "pancreas": 3,
 }
+
+
+def structure_display_name(structure_name: str) -> str:
+    return STRUCTURE_DISPLAY_NAMES.get(structure_name, structure_name)
+
+
+def structure_default_color(structure_name: str) -> tuple[int, int, int]:
+    return STRUCTURE_DEFAULT_COLORS.get(structure_name, (255, 255, 0))
 

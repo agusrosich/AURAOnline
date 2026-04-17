@@ -251,15 +251,24 @@ function inferArchiveAssetType(path) {
 }
 
 function createArchiveAsset(path, bytes) {
+  const blob = new Blob([bytes], { type: inferArchiveAssetType(path) });
   return {
     path,
     name: archiveBaseName(path),
     label: archiveVolumeLabel(path),
     size: bytes.byteLength,
-    url: URL.createObjectURL(
-      new Blob([bytes], { type: inferArchiveAssetType(path) }),
-    ),
+    blob,
+    url: URL.createObjectURL(blob),
   };
+}
+
+function isRtstructArchivePath(path) {
+  const normalizedPath = path.toLowerCase();
+  const baseName = archiveBaseName(normalizedPath);
+  return (
+    normalizedPath.endsWith(".dcm") &&
+    (baseName.startsWith("rs.") || baseName.includes("rtstruct"))
+  );
 }
 
 function createMaskOverlay(label, bytes) {
@@ -319,15 +328,19 @@ async function extractResultAssets(blob) {
   const archive = unzipSync(new Uint8Array(buffer));
   const entries = Object.entries(archive);
   const reportBytes = archive["report.json"];
+  const sortedDicomEntries = entries
+    .filter(([path]) => path.toLowerCase().endsWith(".dcm"))
+    .sort(([left], [right]) =>
+      left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" }),
+    );
+  const rtstructEntry =
+    sortedDicomEntries.find(([path]) => isRtstructArchivePath(path)) ||
+    sortedDicomEntries.find(([path]) => !path.toLowerCase().startsWith("ct/")) ||
+    null;
 
   return {
     report: reportBytes ? JSON.parse(strFromU8(reportBytes)) : null,
-    rtstruct: entries
-      .filter(([path]) => path.toLowerCase().endsWith(".dcm"))
-      .sort(([left], [right]) =>
-        left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" }),
-      )
-      .map(([path, bytes]) => createArchiveAsset(path, bytes))[0] || null,
+    rtstruct: rtstructEntry ? createArchiveAsset(rtstructEntry[0], rtstructEntry[1]) : null,
     masks: entries
       .filter(([path]) => path.startsWith("masks/") && path.toLowerCase().endsWith(".nii.gz"))
       .sort(([left], [right]) =>
@@ -775,6 +788,8 @@ export default function App() {
   const abortRef = useRef(null);
   const initialQueryServerUrlRef = useRef(loadQueryServerUrl());
   const previewLoadKeyRef = useRef("");
+  const supportsDirectoryExport =
+    typeof window !== "undefined" && typeof window.showDirectoryPicker === "function";
 
   const [serverUrl, setServerUrl] = useState(
     () =>
@@ -833,6 +848,12 @@ export default function App() {
   const [downloadUrl, setDownloadUrl] = useState("");
   const [downloadName, setDownloadName] = useState("");
   const [resultAssets, setResultAssets] = useState(null);
+  const [rtstructExportDirectoryHandle, setRtstructExportDirectoryHandle] = useState(null);
+  const [rtstructExportDirectoryName, setRtstructExportDirectoryName] = useState("");
+  const [rtstructExportState, setRtstructExportState] = useState({
+    label: "",
+    tone: "neutral",
+  });
   const [selectedVolumePath, setSelectedVolumePath] = useState("");
   const [volumePreview, setVolumePreview] = useState(null);
   const [livePreviewCaseId, setLivePreviewCaseId] = useState("");
@@ -982,6 +1003,10 @@ export default function App() {
       }
     };
   }, [resultAssets]);
+
+  useEffect(() => {
+    setRtstructExportState({ label: "", tone: "neutral" });
+  }, [resultAssets?.rtstruct?.path]);
 
   useEffect(() => {
     if (!isSubmitting || !backendStatus?.preview_ready || !backendStatus?.current_case_id) {
@@ -1193,6 +1218,70 @@ export default function App() {
     });
   }
 
+  async function chooseRtstructExportDirectory() {
+    if (!supportsDirectoryExport) {
+      throw new Error("Este navegador no soporta exportacion directa a carpetas locales.");
+    }
+
+    const directoryHandle = await window.showDirectoryPicker({ mode: "readwrite" });
+    setRtstructExportDirectoryHandle(directoryHandle);
+    setRtstructExportDirectoryName(directoryHandle.name || "");
+    return directoryHandle;
+  }
+
+  async function exportRtstructToDirectory({ repickDirectory = false } = {}) {
+    if (!resultAssets?.rtstruct) {
+      setRtstructExportState({ label: "No hay RT-STRUCT disponible para exportar.", tone: "warning" });
+      return;
+    }
+
+    if (!supportsDirectoryExport) {
+      const label = "Usa Chrome o Edge para exportar directo a una carpeta. Si no, descarga el DICOM.";
+      setRtstructExportState({ label, tone: "warning" });
+      appendLog(label);
+      return;
+    }
+
+    let directoryHandle = rtstructExportDirectoryHandle;
+    try {
+      if (!directoryHandle || repickDirectory) {
+        directoryHandle = await chooseRtstructExportDirectory();
+      }
+    } catch (error) {
+      if (error?.name === "AbortError") {
+        setRtstructExportState({ label: "Seleccion de carpeta cancelada.", tone: "warning" });
+        return;
+      }
+      const message = error instanceof Error ? error.message : "No se pudo seleccionar la carpeta.";
+      setRtstructExportState({ label: message, tone: "danger" });
+      appendLog(message);
+      return;
+    }
+
+    try {
+      const fileHandle = await directoryHandle.getFileHandle(resultAssets.rtstruct.name, {
+        create: true,
+      });
+      const writable = await fileHandle.createWritable();
+      await writable.write(resultAssets.rtstruct.blob);
+      await writable.close();
+
+      const directoryName = directoryHandle.name || rtstructExportDirectoryName || "carpeta seleccionada";
+      setRtstructExportDirectoryHandle(directoryHandle);
+      setRtstructExportDirectoryName(directoryName);
+      setRtstructExportState({
+        label: `${resultAssets.rtstruct.name} exportado a ${directoryName}.`,
+        tone: "success",
+      });
+      appendLog(`RT-STRUCT exportado a la carpeta ${directoryName}.`);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "No se pudo escribir el archivo RT-STRUCT.";
+      setRtstructExportState({ label: `Exportacion fallida: ${message}`, tone: "danger" });
+      appendLog(`Error al exportar RT-STRUCT: ${message}`);
+    }
+  }
+
   async function verifyDicom() {
     if (!dicomAeTitle.trim() || !dicomHost.trim()) {
       setDicomVerifyState({ label: "AE Title y host son requeridos", tone: "danger" });
@@ -1260,6 +1349,7 @@ export default function App() {
     setDownloadUrl("");
     setDownloadName("");
     setResultAssets(null);
+    setRtstructExportState({ label: "", tone: "neutral" });
     setSelectedVolumePath("");
     setVolumePreview(null);
     setOpenSections((current) => ({ ...current, resultados: true }));
@@ -1306,6 +1396,7 @@ export default function App() {
     setDownloadUrl("");
     setDownloadName("");
     setResultAssets(null);
+    setRtstructExportState({ label: "", tone: "neutral" });
     setSelectedVolumePath("");
     setVolumePreview(null);
     setViewWindow(null);
@@ -1498,6 +1589,7 @@ export default function App() {
     setDownloadUrl("");
     setDownloadName("");
     setResultAssets(null);
+    setRtstructExportState({ label: "", tone: "neutral" });
     setSelectedVolumePath("");
     setVolumePreview(null);
     previewLoadKeyRef.current = "";
@@ -2161,15 +2253,70 @@ export default function App() {
                                     ? `${resultAssets.rtstruct.name} · ${bytesToReadable(resultAssets.rtstruct.size)}`
                                     : "No encontrado en la respuesta"}
                                 </small>
+                                {rtstructExportState.label && (
+                                  <small
+                                    style={{
+                                      color:
+                                        rtstructExportState.tone === "success"
+                                          ? "#22c55e"
+                                          : rtstructExportState.tone === "danger"
+                                            ? "#ef4444"
+                                            : rtstructExportState.tone === "warning"
+                                              ? "var(--warning)"
+                                              : "var(--text-secondary)",
+                                    }}
+                                  >
+                                    {rtstructExportState.label}
+                                  </small>
+                                )}
                               </div>
                               {resultAssets.rtstruct ? (
-                                <a
-                                  className="anchor-button"
-                                  href={resultAssets.rtstruct.url}
-                                  download={resultAssets.rtstruct.name}
+                                <div
+                                  style={{
+                                    display: "flex",
+                                    flexDirection: "column",
+                                    gap: "6px",
+                                    alignItems: "flex-end",
+                                  }}
                                 >
-                                  Descargar
-                                </a>
+                                  <a
+                                    className="anchor-button"
+                                    href={resultAssets.rtstruct.url}
+                                    download={resultAssets.rtstruct.name}
+                                  >
+                                    Descargar
+                                  </a>
+                                  {supportsDirectoryExport ? (
+                                    <>
+                                      <button
+                                        className="pill-button"
+                                        onClick={() =>
+                                          exportRtstructToDirectory({
+                                            repickDirectory: !rtstructExportDirectoryHandle,
+                                          })
+                                        }
+                                      >
+                                        {rtstructExportDirectoryName
+                                          ? `Exportar a ${rtstructExportDirectoryName}`
+                                          : "Elegir carpeta y exportar"}
+                                      </button>
+                                      {rtstructExportDirectoryHandle && (
+                                        <button
+                                          className="pill-button"
+                                          onClick={() =>
+                                            exportRtstructToDirectory({ repickDirectory: true })
+                                          }
+                                        >
+                                          Cambiar carpeta
+                                        </button>
+                                      )}
+                                    </>
+                                  ) : (
+                                    <span className="download-meta">
+                                      Exportacion directa disponible en Chrome/Edge.
+                                    </span>
+                                  )}
+                                </div>
                               ) : (
                                 <span className="download-meta warning">Falta</span>
                               )}

@@ -42,6 +42,7 @@ Plataforma de segmentación automática de TC para planificación de radioterapi
 - Selección de estructuras y presets
 - Polling de estado en tiempo real
 - Envío HTTP y descarga del ZIP de salida
+- Exportación directa del RT-STRUCT a carpeta local desde Chrome/Edge
 
 ### Desktop Client ✅ *(Windows)*
 - GUI completa con `customtkinter` (5 tabs)
@@ -51,6 +52,7 @@ Plataforma de segmentación automática de TC para planificación de radioterapi
 - Polling de `/status` en hilo separado
 - Descarga streaming con soporte de cancelación
 - Apertura automática de carpeta de salida en Windows
+- Barra lateral de exportación para incluir/excluir ROI y cambiar colores antes de guardar el RT-STRUCT
 
 ### Planificado 🔜
 - MONAI UNesT (estructuras de cabeza y cuello)
